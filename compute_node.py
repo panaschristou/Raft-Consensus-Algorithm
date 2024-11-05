@@ -90,16 +90,29 @@ class RaftNode:
             self.election_in_progress = True
         print(f"Node {self.node_id} initiating election for term {self.current_term}.")
 
-    def lock_peers_election_timers(self):
-        acknowledgments = 0
+        # Notify peers to set their election lock
+        self.notify_peers_of_election()
+
+    def notify_peers_of_election(self):
+        """Notify peers to set their election lock to prevent simultaneous elections."""
         for peer in self.peers:
             try:
                 with xmlrpc.client.ServerProxy(peer) as client:
-                    if client.lock_election_timer(self.current_term):
-                        acknowledgments += 1
-            except:
-                print(f"Node {self.node_id}: Failed to lock election timer on {peer}.")
-        print(f"Node {self.node_id} received {acknowledgments} lock acknowledgments.")
+                    client.lock_election_timer(self.current_term)
+                    print(f"Node {self.node_id} notified peer {peer} to lock election timer.")
+            except Exception as e:
+                print(f"Node {self.node_id}: Error notifying peer {peer} to lock election - {e}")
+
+    def lock_election_timer(self, term):
+        """RPC method to allow a peer to lock election timers."""
+        with self.lock:
+            print(term, self.current_term)
+            if term >= self.current_term:
+                self.election_in_progress = True
+                print(f"Node {self.node_id} locked election timer for term {term}.")
+                return True
+            return False
+
 
     def collect_votes(self):
         votes = 1  # Vote for self
