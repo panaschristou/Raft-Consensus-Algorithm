@@ -89,12 +89,9 @@ class RaftNode:
             self.last_heartbeat = time.time()
             self.election_in_progress = True
         print(f"Node {self.node_id} initiating election for term {self.current_term}.")
-
-        # Notify peers to set their election lock
         self.notify_peers_of_election()
 
     def notify_peers_of_election(self):
-        """Notify peers to set their election lock to prevent simultaneous elections."""
         for peer in self.peers:
             try:
                 with xmlrpc.client.ServerProxy(peer) as client:
@@ -104,15 +101,12 @@ class RaftNode:
                 print(f"Node {self.node_id}: Error notifying peer {peer} to lock election - {e}")
 
     def lock_election_timer(self, term):
-        """RPC method to allow a peer to lock election timers."""
         with self.lock:
-            print(term, self.current_term)
             if term >= self.current_term:
                 self.election_in_progress = True
                 print(f"Node {self.node_id} locked election timer for term {term}.")
                 return True
             return False
-
 
     def collect_votes(self):
         votes = 1  # Vote for self
@@ -146,14 +140,6 @@ class RaftNode:
         time.sleep(random.uniform(10, 30))
         self.state = FOLLOWER
         self.election_in_progress = False
-
-    def lock_election_timer(self, term):
-        with self.lock:
-            if term >= self.current_term:
-                self.election_in_progress = True
-                print(f"Node {self.node_id} locked election timer.")
-                return True
-            return False
 
     def unlock_peers_election_timers(self):
         for peer in self.peers:
@@ -190,20 +176,29 @@ class RaftNode:
 
     def check_heartbeat(self):
         while True:
-            election_timeout = self.node_id * 5
+            election_timeout = random.uniform(0.15, 0.3)
             time.sleep(election_timeout)
             with self.lock:
                 if self.state == FOLLOWER and not self.election_in_progress and time.time() - self.last_heartbeat > election_timeout:
                     print(f"Node {self.node_id} starting election due to missed heartbeat.")
                     self.start_election()
 
+    def start_listener(self, port):
+        """Listener for incoming RPC requests"""
+        with SimpleXMLRPCServer(("localhost", port), allow_none=True) as server:
+            server.register_instance(self)
+            print(f"Node {self.node_id} listener running on port {port}...")
+            server.serve_forever()
+
 def run_node(node_id, peers):
     node = RaftNode(node_id, peers)
-    with SimpleXMLRPCServer(("localhost", 8000 + node_id), allow_none=True) as server:
-        server.register_instance(node)
-        print(f"Node {node_id} running on port {8000 + node_id}...")
-        threading.Thread(target=node.check_heartbeat).start()
-        server.serve_forever()
+    
+    # Start the listener thread
+    listener_port = 8000 + node_id
+    threading.Thread(target=node.start_listener, args=(listener_port,), daemon=True).start()
+    
+    # Start the main processing thread
+    threading.Thread(target=node.check_heartbeat, daemon=True).start()
 
 if __name__ == "__main__":
     peers = ["http://localhost:8001", "http://localhost:8002", "http://localhost:8003"]
