@@ -59,15 +59,26 @@ class ComputeNode:
             print(f"Node {self.node_id}: Error creating log file: {e}")
 
     def initialize_connections(self):
-        """Initialize connections to other nodes in the cluster"""
-        for other_id, addr in self.nodes_config.items():
-            if other_id != self.node_id:
-                try:
-                    time.sleep(random.uniform(0.1, 0.3))  # Simulate network delay
-                    self.connections[other_id] = Client(addr, authkey=b'raft')
-                    print(f"Node {self.node_id}: Connected to node {other_id}")
-                except Exception as e:
-                    print(f"Node {self.node_id}: Failed to connect to node {other_id}: {e}")
+        """
+        Initialize connections to other nodes with retry mechanism
+        """
+        while True:
+            disconnected_nodes = []
+            for other_id, addr in self.nodes_config.items():
+                if other_id != self.node_id and other_id not in self.connections:
+                    try:
+                        print(f"Node {self.node_id}: Attempting to connect to node {other_id} at {addr}")
+                        self.connections[other_id] = Client(addr, authkey=b'raft')
+                        print(f"Node {self.node_id}: Successfully connected to node {other_id}")
+                    except Exception as e:
+                        print(f"Node {self.node_id}: Failed to connect to node {other_id}: {e}")
+                        disconnected_nodes.append(other_id)
+            
+            if not disconnected_nodes:  # All connections successful
+                break
+            
+            print(f"Node {self.node_id}: Waiting to retry connections to nodes: {disconnected_nodes}")
+        time.sleep(5)  # Wait before retrying
 
     def start(self):
         """Start the node's operation"""
@@ -225,47 +236,120 @@ class ComputeNode:
                         self.send_append_entries(other_id)
             
             time.sleep(self.heartbeat_interval)
-
-    def send_append_entries(self, target_id):
-        """Send AppendEntries RPC to a target node"""
-        with self.state_lock:
-            if self.state != 'leader':
-                return False
-            
-            next_idx = self.next_index.get(target_id, len(self.log))
-            prev_log_index = next_idx - 1
-            prev_log_term = self.log[prev_log_index]['term'] if prev_log_index >= 0 else 0
-            entries = self.log[next_idx:] if next_idx < len(self.log) else []
-            
-            request = {
-                'type': 'append_entries',
-                'term': self.current_term,
-                'leader_id': self.node_id,
-                'prev_log_index': prev_log_index,
-                'prev_log_term': prev_log_term,
-                'entries': entries,
-                'leader_commit': self.commit_index
-            }
-        
+    
+    def retry_connection(self, target_id):
+        """Retry connection to a specific node"""
         try:
-            conn = self.connections.get(target_id)
-            if conn:
-                time.sleep(random.uniform(0.05, 0.15))  # Simulate network delay
+            addr = self.nodes_config[target_id]
+            self.connections[target_id] = Client(addr, authkey=b'raft')
+            print(f"Node {self.node_id}: Reconnected to node {target_id}")
+            return True
+        except Exception as e:
+            print(f"Node {self.node_id}: Failed to reconnect to node {target_id}: {e}")
+            return False
+        
+    def send_append_entries(self, target_id):
+        """
+        Send AppendEntries RPC to a target node with retry mechanism.
+        Handles network delays and connection retries.
+        
+        Args:
+            target_id: ID of the target node
+            
+        Returns:
+            bool: True if entries were successfully appended, False otherwise
+        """
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                with self.state_lock:
+                    if self.state != 'leader':
+                        return False
+                    
+                    next_idx = self.next_index.get(target_id, len(self.log))
+                    prev_log_index = next_idx - 1
+                    prev_log_term = self.log[prev_log_index]['term'] if prev_log_index >= 0 else 0
+                    entries = self.log[next_idx:] if next_idx < len(self.log) else []
+                    
+                    request = {
+                        'type': 'append_entries',
+                        'term': self.current_term,
+                        'leader_id': self.node_id,
+                        'prev_log_index': prev_log_index,
+                        'prev_log_term': prev_log_term,
+                        'entries': entries,
+                        'leader_commit': self.commit_index
+                    }
+                
+                # Get connection or attempt to reconnect
+                conn = self.connections.get(target_id)
+                if not conn:
+                    if attempt < max_retries - 1:
+                        if self.retry_connection(target_id):
+                            conn = self.connections.get(target_id)
+                        else:
+                            continue
+                    else:
+                        print(f"Node {self.node_id}: Failed to establish connection with node {target_id}")
+                        return False
+                
+                # Simulate network delay
+                time.sleep(random.uniform(0.05, 0.15))
+                
+                # Send request and get response
                 conn.send(json.dumps(request))
                 response = json.loads(conn.recv())
                 
+                # Handle response
                 if response.get('success'):
                     with self.state_lock:
                         self.match_index[target_id] = prev_log_index + len(entries)
                         self.next_index[target_id] = self.match_index[target_id] + 1
+                        
+                        # Update commit index if possible
+                        if entries:
+                            # Count nodes that have replicated each log entry
+                            for i in range(self.commit_index + 1, len(self.log)):
+                                replication_count = 1  # Count self
+                                for node_id in self.nodes_config:
+                                    if node_id != self.node_id and \
+                                    self.match_index.get(node_id, -1) >= i:
+                                        replication_count += 1
+                                
+                                # If majority have replicated and entry is from current term
+                                if replication_count > len(self.nodes_config) // 2 and \
+                                self.log[i]['term'] == self.current_term:
+                                    self.commit_index = i
+                    
                     return True
                 else:
+                    # If follower's term is higher, step down
+                    if response.get('term', 0) > self.current_term:
+                        with self.state_lock:
+                            self.current_term = response['term']
+                            self.state = 'follower'
+                            self.voted_for = None
+                        return False
+                    
+                    # If append failed, decrement nextIndex and retry
                     with self.state_lock:
-                        self.next_index[target_id] = max(0, self.next_index[target_id] - 1)
+                        if attempt < max_retries - 1:
+                            self.next_index[target_id] = max(0, self.next_index[target_id] - 1)
+                            continue
+                        
                     return False
-        except Exception as e:
-            print(f"Node {self.node_id}: Error sending append entries to node {target_id}: {e}")
-            return False
+                    
+            except Exception as e:
+                print(f"Node {self.node_id}: Error in append_entries to node {target_id} (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    print(f"Node {self.node_id}: Retrying connection to node {target_id}")
+                    if self.retry_connection(target_id):
+                        continue
+                else:
+                    print(f"Node {self.node_id}: Failed all retry attempts to node {target_id}")
+        
+        return False
 
     def handle_append_entries(self, request):
         """Handle append entries requests (including heartbeats)"""
