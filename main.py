@@ -1,6 +1,7 @@
 import sys
 import time
 from compute_node import ComputeNode
+from nodes_config import nodes_config
 from threading import Thread
 
 def start_node(node_id, nodes_config):
@@ -16,11 +17,7 @@ def start_node(node_id, nodes_config):
 def main():
     """Main function to start the Raft cluster"""
     # Node configuration
-    nodes_config = {
-        0: ('localhost', 5001),
-        1: ('localhost', 5002),
-        2: ('localhost', 5003)
-    }
+    
 
     # Check command line arguments for specific node to start
     if len(sys.argv) > 1:

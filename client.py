@@ -1,6 +1,7 @@
 import json
 import time
 from multiprocessing.connection import Client
+from nodes_config import nodes_config
 
 class RaftClient:
     """
@@ -191,12 +192,6 @@ class RaftClient:
 
 def main():
     """Main function to run the client interface"""
-    # Node configuration
-    nodes_config = {
-        0: ('localhost', 5000),
-        1: ('localhost', 5001),
-        2: ('localhost', 5002)
-    }
 
     # Create client
     client = RaftClient(nodes_config)
