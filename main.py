@@ -1,9 +1,9 @@
-import sys
+# main.py import sys
 import time
 from compute_node import ComputeNode
 from nodes_config import nodes_config
 from threading import Thread
-
+import sys
 def start_node(node_id, nodes_config):
     """Start a single node in the Raft cluster"""
     try:
@@ -13,6 +13,21 @@ def start_node(node_id, nodes_config):
     except Exception as e:
         print(f"Error starting node {node_id}: {e}")
         return None
+def check_network():
+    """Check network connectivity between nodes"""
+    import socket
+    for node_id, (ip, port) in nodes_config.items():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex((ip, port))
+            if result == 0:
+                print(f"Port {port} is open on {ip}")
+            else:
+                print(f"Port {port} is closed on {ip}")
+            sock.close()
+        except Exception as e:
+            print(f"Error checking {ip}:{port} - {e}")
 
 def main():
     """Main function to start the Raft cluster"""
@@ -64,4 +79,5 @@ def main():
             sys.exit(0)
 
 if __name__ == "__main__":
+    check_network()
     main()
