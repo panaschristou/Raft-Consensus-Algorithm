@@ -159,9 +159,17 @@ class ComputeNode:
         while True:
             time.sleep(0.1)  # Check every 100ms
             with self.state_lock:
+                current_time = time.time()
                 if self.state != 'leader':
-                    if time.time() - self.last_heartbeat > self.election_timeout:
+                    if current_time - self.last_heartbeat > self.election_timeout:
+                        print(f"\nNode {self.node_id}: Starting election due to heartbeat timeout")
+                        print(f"Node {self.node_id}: Last heartbeat: {current_time - self.last_heartbeat:.2f} seconds ago")
                         self.start_election()
+                else:
+                    # If leader, print periodic status
+                    if current_time - self.last_heartbeat > self.heartbeat_interval:
+                        print(f"Node {self.node_id}: Currently leader for term {self.current_term}")
+                        self.last_heartbeat = current_time
 
     def start_election(self):
         """Start a new election"""
@@ -170,11 +178,13 @@ class ComputeNode:
             self.current_term += 1
             self.voted_for = self.node_id
             self.votes_received = {self.node_id}
-            print(f"Node {self.node_id}: Starting election for term {self.current_term}")
+            print(f"\nNode {self.node_id}: Starting election for term {self.current_term}")
+            print(f"Node {self.node_id}: Voted for self")
 
         # Request votes from all other nodes
         for other_id in self.nodes_config:
             if other_id != self.node_id:
+                print(f"Node {self.node_id}: Requesting vote from node {other_id}")
                 self.request_vote(other_id)
 
     def request_vote(self, target_id):
@@ -236,7 +246,9 @@ class ComputeNode:
                 # Initialize leader state
                 self.next_index = {node_id: len(self.log) for node_id in self.nodes_config if node_id != self.node_id}
                 self.match_index = {node_id: -1 for node_id in self.nodes_config if node_id != self.node_id}
-                print(f"Node {self.node_id}: Became leader for term {self.current_term}")
+                print(f"\n{'='*50}")
+                print(f"Node {self.node_id}: BECAME LEADER for term {self.current_term}")
+                print(f"{'='*50}")
                 # Start sending heartbeats
                 Thread(target=self.send_heartbeats, daemon=True).start()
 
@@ -350,7 +362,10 @@ class ComputeNode:
         """Handle client value submissions"""
         with self.state_lock:
             if self.state != 'leader':
+                print(f"Node {self.node_id}: Redirecting client to leader (node {self.leader_id})")
                 return {'success': False, 'leader_id': self.leader_id}
+            
+            print(f"\nNode {self.node_id}: Handling submit value request: {request['value']}")
             
             # Append to log
             entry = {
@@ -361,24 +376,32 @@ class ComputeNode:
             with self.log_lock:
                 self.log.append(entry)
                 log_index = len(self.log) - 1
+                print(f"Node {self.node_id}: Appended value to log at index {log_index}")
             
             # Replicate to followers
             replication_count = 1  # Count self
+            print(f"Node {self.node_id}: Replicating to followers...")
+            
             for other_id in self.nodes_config:
                 if other_id != self.node_id:
                     if self.send_append_entries(other_id):
                         replication_count += 1
+                        print(f"Node {self.node_id}: Successfully replicated to node {other_id}")
+                    else:
+                        print(f"Node {self.node_id}: Failed to replicate to node {other_id}")
             
             # Check if majority achieved
             if replication_count > len(self.nodes_config) // 2:
                 with self.log_lock:
                     with open(self.log_file, 'a') as f:
                         f.write(f"{entry['value']}\n")
+                print(f"Node {self.node_id}: Successfully committed value {entry['value']}")
                 return {'success': True}
             else:
                 # Rollback if not replicated to majority
                 with self.log_lock:
                     self.log.pop()
+                print(f"Node {self.node_id}: Failed to achieve majority consensus, rolling back")
                 return {'success': False, 'message': 'Failed to replicate to majority'}
 
     def handle_force_leader_change(self):

@@ -63,27 +63,22 @@ class RaftClient:
         return False
 
     def _try_submit_to_node(self, node_id, request):
-        """
-        Try to submit a request to a specific node.
-        
-        Args:
-            node_id: The ID of the node to try
-            request: The request to submit
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Try to submit a request to a specific node"""
         try:
+            print(f"\nAttempting to submit value to node {node_id}...")
             conn = self.connections.get(node_id)
             if not conn:
+                print(f"No connection to node {node_id}")
                 return False
 
             conn.send(json.dumps(request))
+            print(f"Request sent to node {node_id}, waiting for response...")
             response = json.loads(conn.recv())
+            print(f"Received response from node {node_id}: {response}")
 
             if response.get('success'):
                 self.leader_id = node_id
-                print(f"Value successfully committed through node {node_id}")
+                print(f"Value successfully committed through leader node {node_id}")
                 return True
             elif response.get('leader_id') is not None:
                 self.leader_id = response['leader_id']
