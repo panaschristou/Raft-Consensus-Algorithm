@@ -13,8 +13,10 @@ def start_node(node_id, nodes_config):
     except Exception as e:
         print(f"Error starting node {node_id}: {e}")
         return None
+
 def check_network():
     """Check network connectivity between nodes"""
+    print("\nChecking network connectivity...")
     import socket
     for node_id, (ip, port) in nodes_config.items():
         try:
@@ -22,12 +24,13 @@ def check_network():
             sock.settimeout(2)
             result = sock.connect_ex((ip, port))
             if result == 0:
-                print(f"Port {port} is open on {ip}")
+                print(f"✓ Node {node_id}: Port {port} is open on {ip}")
             else:
-                print(f"Port {port} is closed on {ip}")
+                print(f"✗ Node {node_id}: Port {port} is closed on {ip}")
             sock.close()
         except Exception as e:
-            print(f"Error checking {ip}:{port} - {e}")
+            print(f"✗ Node {node_id}: Error checking {ip}:{port} - {e}")
+    print("")
 
 def main():
     """Main function to start the Raft cluster"""

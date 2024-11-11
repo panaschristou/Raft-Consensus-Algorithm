@@ -31,34 +31,41 @@ class RaftClient:
             except Exception as e:
                 print(f"Failed to connect to node {node_id}: {e}")
 
+    # In RaftClient class, update the submit_value method:
     def submit_value(self, value):
-        """
-        Submit a value to be written to the distributed log.
+        """Submit a value to be written to the distributed log."""
+        print(f"\nAttempting to submit value: {value}")
         
-        Args:
-            value: The value to be written to the log
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
         request = {
             'type': 'submit_value',
             'value': value
         }
 
-        # If we know the leader, try it first
-        if self.leader_id is not None:
-            success = self._try_submit_to_node(self.leader_id, request)
-            if success:
-                return True
-
         # Try all nodes until we find the leader
         for node_id in self.nodes_config:
-            if node_id != self.leader_id:  # Skip if we already tried this node as leader
-                success = self._try_submit_to_node(node_id, request)
-                if success:
-                    return True
+            try:
+                print(f"Trying node {node_id}...")
+                conn = self.connections.get(node_id)
+                if not conn:
+                    print(f"No connection to node {node_id}")
+                    continue
 
+                conn.send(json.dumps(request))
+                response = json.loads(conn.recv())
+                
+                if response.get('success'):
+                    print(f"Success! Value {value} written to log via node {node_id}")
+                    self.leader_id = node_id
+                    return True
+                elif 'leader_id' in response:
+                    print(f"Redirected to leader node {response['leader_id']}")
+                    self.leader_id = response['leader_id']
+                    # Try the leader directly
+                    return self._try_submit_to_node(self.leader_id, request)
+                
+            except Exception as e:
+                print(f"Error with node {node_id}: {e}")
+        
         print("Failed to submit value: No leader found")
         return False
 
@@ -73,17 +80,19 @@ class RaftClient:
 
             conn.send(json.dumps(request))
             print(f"Request sent to node {node_id}, waiting for response...")
+            
             response = json.loads(conn.recv())
-            print(f"Received response from node {node_id}: {response}")
-
+            
+            # If successful, set this as the leader.
             if response.get('success'):
+                print(f"Received success response from Node-{node_id}. This is now recognized as leader.")
                 self.leader_id = node_id
-                print(f"Value successfully committed through leader node {node_id}")
                 return True
+            
+            # If redirected to another leader, update leader ID.
             elif response.get('leader_id') is not None:
+                print(f"Redirected to leader Node-{response['leader_id']}")
                 self.leader_id = response['leader_id']
-                print(f"Redirecting to leader node {self.leader_id}")
-                return False
             
             return False
 

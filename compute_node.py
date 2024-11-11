@@ -50,14 +50,16 @@ class ComputeNode:
         # Initialize connections to other nodes
         self.initialize_connections()
 
+# In ComputeNode class, update create_log_file:
     def create_log_file(self):
         """Create the initial log file as required"""
         try:
             with open(self.log_file, 'w') as f:
                 f.write('')
-            print(f"Node {self.node_id}: Created log file CISC6935")
+            print(f"Node {self.node_id}: Created log file {self.log_file}")
         except Exception as e:
             print(f"Node {self.node_id}: Error creating log file: {e}")
+            raise e  # Re-raise to catch initialization failures
 
     def initialize_connections(self):
         """Initialize connections to other nodes in the cluster with retry mechanism"""
@@ -93,17 +95,24 @@ class ComputeNode:
 
     def start(self):
         """Start the node's operation"""
-        # Start heartbeat checker
-        self.heartbeat_thread = Thread(target=self.check_heartbeat)
-        self.heartbeat_thread.daemon = True
-        self.heartbeat_thread.start()
+        print(f"\nNode {self.node_id}: Starting as follower")
+        self.state = 'follower'
+        self.last_heartbeat = time.time()
         
-        # Start RPC listener
+        # Start RPC listener first
         self.listener_thread = Thread(target=self.start_listener)
         self.listener_thread.daemon = True
         self.listener_thread.start()
         
-        print(f"Node {self.node_id}: Started")
+        # Give some time for listeners to start
+        time.sleep(2)
+        
+        # Start heartbeat checker (which will trigger election)
+        self.heartbeat_thread = Thread(target=self.check_heartbeat)
+        self.heartbeat_thread.daemon = True
+        self.heartbeat_thread.start()
+        
+        print(f"Node {self.node_id}: Started and waiting for election timeout")
 
     def start_listener(self):
         """Start listening for RPC calls"""
@@ -159,17 +168,46 @@ class ComputeNode:
         while True:
             time.sleep(0.1)  # Check every 100ms
             with self.state_lock:
-                current_time = time.time()
                 if self.state != 'leader':
-                    if current_time - self.last_heartbeat > self.election_timeout:
-                        print(f"\nNode {self.node_id}: Starting election due to heartbeat timeout")
-                        print(f"Node {self.node_id}: Last heartbeat: {current_time - self.last_heartbeat:.2f} seconds ago")
-                        self.start_election()
-                else:
-                    # If leader, print periodic status
-                    if current_time - self.last_heartbeat > self.heartbeat_interval:
-                        print(f"Node {self.node_id}: Currently leader for term {self.current_term}")
+                    current_time = time.time()
+                    time_since_last_heartbeat = current_time - self.last_heartbeat
+                    
+                    if time_since_last_heartbeat > self.election_timeout:
+                        print(f"\nNode {self.node_id}: Starting election due to timeout")
+                        print(f"Last heartbeat: {time_since_last_heartbeat:.2f} seconds ago")
                         self.last_heartbeat = current_time
+                        
+                        # Start election in a new thread
+                        election_thread = Thread(target=self.start_election)
+                        election_thread.daemon = True
+                        election_thread.start()
+
+    def start_election(self):
+        """Start a new election"""
+        with self.state_lock:
+            self.state = 'candidate'
+            self.current_term += 1
+            self.voted_for = self.node_id
+            self.votes_received = {self.node_id}  # Vote for self
+            print(f"\nNode {self.node_id}: Starting election for term {self.current_term}")
+            print(f"Node {self.node_id}: Voted for self")
+
+        # Request votes from all other nodes
+        votes_received = 1  # Count self-vote
+        for other_id in self.nodes_config:
+            if other_id != self.node_id:
+                try:
+                    print(f"Node {self.node_id}: Requesting vote from node {other_id}")
+                    if self.request_vote(other_id):  # Request vote from other nodes
+                        votes_received += 1
+                        print(f"Node {self.node_id}: Received vote from node {other_id}")
+                        if votes_received > len(self.nodes_config) // 2:  # Majority achieved
+                            self.become_leader()
+                            return
+                except Exception as e:
+                    print(f"Node {self.node_id}: Error requesting vote from node {other_id}: {e}")
+
+        print(f"Node {self.node_id}: Election ended with {votes_received} votes")
 
     def start_election(self):
         """Start a new election"""
@@ -182,14 +220,26 @@ class ComputeNode:
             print(f"Node {self.node_id}: Voted for self")
 
         # Request votes from all other nodes
+        votes_received = 1  # Count self-vote
         for other_id in self.nodes_config:
             if other_id != self.node_id:
-                print(f"Node {self.node_id}: Requesting vote from node {other_id}")
-                self.request_vote(other_id)
+                try:
+                    print(f"Node {self.node_id}: Requesting vote from node {other_id}")
+                    if self.request_vote(other_id):
+                        votes_received += 1
+                        print(f"Node {self.node_id}: Received vote from node {other_id}")
+                        if votes_received > len(self.nodes_config) // 2:  # Majority achieved
+                            self.become_leader()
+                            return
+                except Exception as e:
+                    print(f"Node {self.node_id}: Error requesting vote from node {other_id}: {e}")
 
+        print(f"Node {self.node_id}: Election ended with {votes_received} votes")
+    
     def request_vote(self, target_id):
         """Send RequestVote RPC to a target node"""
         with self.state_lock:
+            # Prepare the RequestVote message
             request = {
                 'type': 'request_vote',
                 'term': self.current_term,
@@ -199,42 +249,58 @@ class ComputeNode:
             }
         
         try:
+            # Get the connection to the target node
             conn = self.connections.get(target_id)
             if conn:
-                time.sleep(random.uniform(0.05, 0.15))  # Simulate network delay
+                print(f"Node {self.node_id}: Sending vote request to node {target_id}")
+                
+                # Send the RequestVote message
                 conn.send(json.dumps(request))
+                
+                # Wait for and process the response
                 response = json.loads(conn.recv())
                 
+                # If the vote was granted, return True
                 if response.get('vote_granted'):
+                    return True
+                
+                # If the target node has a higher term, update our term and step down to follower
+                if response.get('term', 0) > self.current_term:
                     with self.state_lock:
-                        if self.state == 'candidate':
-                            self.votes_received.add(target_id)
-                            if len(self.votes_received) > len(self.nodes_config) // 2:
-                                self.become_leader()
+                        print(f"Node {self.node_id}: Stepping down due to higher term from node {target_id}")
+                        self.current_term = response['term']
+                        self.state = 'follower'
+                        self.voted_for = None
+                return False
+
         except Exception as e:
             print(f"Node {self.node_id}: Error requesting vote from node {target_id}: {e}")
-
+            return False
+        
     def handle_vote_request(self, request):
         """Handle incoming vote requests"""
         with self.state_lock:
+            print(f"Node {self.node_id}: Received vote request from node {request['candidate_id']}")
+
+            # If the term in the request is lower than the current term, deny the vote.
             if request['term'] < self.current_term:
+                print(f"Node {self.node_id}: Denying vote - lower term")
                 return {'vote_granted': False, 'term': self.current_term}
-            
+
+            # If the term in the request is higher, update our current term and become a follower.
             if request['term'] > self.current_term:
+                print(f"Node {self.node_id}: Updating term and becoming follower")
                 self.current_term = request['term']
                 self.state = 'follower'
                 self.voted_for = None
-            
-            last_log_index = len(self.log) - 1
-            last_log_term = self.log[-1]['term'] if self.log else 0
-            
-            if (self.voted_for is None or self.voted_for == request['candidate_id']) and \
-               (request['last_log_term'] > last_log_term or \
-                (request['last_log_term'] == last_log_term and \
-                 request['last_log_index'] >= last_log_index)):
+
+            # Grant the vote if we haven't voted yet or voted for this candidate in this term.
+            if (self.voted_for is None or self.voted_for == request['candidate_id']):
+                print(f"Node {self.node_id}: Granting vote to node {request['candidate_id']}")
                 self.voted_for = request['candidate_id']
                 return {'vote_granted': True, 'term': self.current_term}
-            
+
+            print(f"Node {self.node_id}: Denying vote - already voted for another candidate")
             return {'vote_granted': False, 'term': self.current_term}
 
     def become_leader(self):
@@ -249,21 +315,58 @@ class ComputeNode:
                 print(f"\n{'='*50}")
                 print(f"Node {self.node_id}: BECAME LEADER for term {self.current_term}")
                 print(f"{'='*50}")
-                # Start sending heartbeats
-                Thread(target=self.send_heartbeats, daemon=True).start()
+                
+                # Start sending heartbeats immediately
+                self.send_heartbeats()
+                
+                # Start heartbeat thread
+                heartbeat_thread = Thread(target=self.send_heartbeat_periodically, daemon=True)
+                heartbeat_thread.start()
 
-    def send_heartbeats(self):
-        """Send periodic heartbeats to all followers"""
+    def send_heartbeat_periodically(self):
+        """Send periodic heartbeats"""
         while True:
             with self.state_lock:
                 if self.state != 'leader':
                     break
-                
-                for other_id in self.nodes_config:
-                    if other_id != self.node_id:
-                        self.send_append_entries(other_id)
+                print(f"Node {self.node_id}: Sending heartbeats as leader")
+                for other_node in list(self.nodes_config.keys()):
+                    if other_node != self.node_id: 
+                        success = self.send_append_entries(other_node)
+                        if success: 
+                            print(f"Heartbeat sent to Node-{other_node}")
             
             time.sleep(self.heartbeat_interval)
+    
+    def send_heartbeats(self):
+        """Send heartbeats to all followers"""
+        with self.state_lock:
+            if self.state != 'leader':
+                return
+            
+            print(f"Node {self.node_id}: Sending heartbeats as leader")
+            for other_id in self.nodes_config:
+                if other_id != self.node_id:
+                    try:
+                        # Send empty append entries as heartbeat
+                        request = {
+                            'type': 'append_entries',
+                            'term': self.current_term,
+                            'leader_id': self.node_id,
+                            'prev_log_index': len(self.log) - 1,
+                            'prev_log_term': self.log[-1]['term'] if self.log else 0,
+                            'entries': [],
+                            'leader_commit': self.commit_index
+                        }
+                        
+                        conn = self.connections.get(other_id)
+                        if conn:
+                            conn.send(json.dumps(request))
+                            response = json.loads(conn.recv())
+                            if not response.get('success'):
+                                print(f"Node {self.node_id}: Heartbeat rejected by node {other_id}")
+                    except Exception as e:
+                        print(f"Node {self.node_id}: Failed to send heartbeat to node {other_id}: {e}")
     
     def retry_connection(self, target_id):
         """Retry connection to a specific node"""
@@ -319,30 +422,42 @@ class ComputeNode:
     def handle_append_entries(self, request):
         """Handle append entries requests (including heartbeats)"""
         with self.state_lock:
+            # First check the term
             if request['term'] < self.current_term:
                 return {'success': False, 'term': self.current_term}
             
-            # Update term if needed
-            if request['term'] > self.current_term:
-                self.current_term = request['term']
-                self.state = 'follower'
+            # Update term if needed and convert to follower if necessary
+            if request['term'] >= self.current_term:
+                if request['term'] > self.current_term:
+                    print(f"Node {self.node_id}: Updating term from {self.current_term} to {request['term']}")
+                    self.current_term = request['term']
+                
+                # Always become follower when receiving valid append entries
+                if self.state != 'follower':
+                    print(f"Node {self.node_id}: Converting to follower")
+                    self.state = 'follower'
+                
+                self.leader_id = request['leader_id']
                 self.voted_for = None
             
+            # Reset election timeout as we received valid append entries
             self.last_heartbeat = time.time()
-            self.leader_id = request['leader_id']
             
-            # Check previous log entry
+            # Check previous log entry for consistency
             if request['prev_log_index'] >= len(self.log) or \
-               (request['prev_log_index'] >= 0 and \
+            (request['prev_log_index'] >= 0 and \
                 self.log[request['prev_log_index']]['term'] != request['prev_log_term']):
+                print(f"Node {self.node_id}: Log inconsistency detected")
                 return {'success': False, 'term': self.current_term}
             
             # Handle log entries
             if request['entries']:
+                print(f"Node {self.node_id}: Received {len(request['entries'])} new entries")
                 with self.log_lock:
                     # Delete conflicting entries
                     if request['prev_log_index'] + 1 < len(self.log):
                         self.log = self.log[:request['prev_log_index'] + 1]
+                        print(f"Node {self.node_id}: Deleted conflicting entries")
                     
                     # Append new entries
                     self.log.extend(request['entries'])
@@ -351,10 +466,14 @@ class ComputeNode:
                     with open(self.log_file, 'w') as f:
                         for entry in self.log:
                             f.write(f"{entry['value']}\n")
+                    print(f"Node {self.node_id}: Updated log file with new entries")
+            else:
+                print(f"Node {self.node_id}: Received heartbeat from leader {request['leader_id']}")
             
             # Update commit index
             if request['leader_commit'] > self.commit_index:
                 self.commit_index = min(request['leader_commit'], len(self.log) - 1)
+                print(f"Node {self.node_id}: Updated commit index to {self.commit_index}")
             
             return {'success': True, 'term': self.current_term}
 
