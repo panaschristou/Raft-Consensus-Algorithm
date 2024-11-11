@@ -31,6 +31,7 @@ class Node:
     def start(self):
         # Start the server thread to listen for incoming RPCs
         server_thread = threading.Thread(target=self.run_server)
+        server_thread.daemon = True  # Ensure the server thread exits when the main thread does
         server_thread.start()
 
         # Start the election timer
@@ -46,6 +47,13 @@ class Node:
                     self.heartbeat_timer = HEARTBEAT_INTERVAL
                 else:
                     self.heartbeat_timer -= 0.1
+            else:
+                # Follower or Candidate
+                if self.election_timer <= 0:
+                    print(f"[{self.name}] Election timeout. Starting election.")
+                    self.start_election()
+                else:
+                    self.election_timer -= 0.1
 
     def run_server(self):
         # Create a TCP server socket
@@ -58,6 +66,7 @@ class Node:
             try:
                 client_socket, addr = self.server_socket.accept()
                 client_thread = threading.Thread(target=self.handle_client_connection, args=(client_socket,))
+                client_thread.daemon = True
                 client_thread.start()
             except Exception as e:
                 print(f"[{self.name}] Server error: {e}")
@@ -75,8 +84,6 @@ class Node:
                     response = self.handle_append_entries(request['data'])
                 elif rpc_type == 'SubmitValue':
                     response = self.handle_client_submit(request['data'])
-                elif rpc_type == 'LeaderRedirect':
-                    response = {'leader_ip': NODES[self.leader_name]['ip'], 'leader_port': NODES[self.leader_name]['port']}
                 elif rpc_type == 'TriggerLeaderChange':
                     response = self.trigger_leader_change()
                 elif rpc_type == 'SimulateCrash':
@@ -110,6 +117,7 @@ class Node:
                 self.voted_for = candidate_name
                 vote_granted = True
                 self.reset_election_timer()
+                print(f"[{self.name}] Voted for {candidate_name} in term {self.current_term}")
 
         response = {'term': self.current_term, 'vote_granted': vote_granted}
         return response
@@ -139,15 +147,20 @@ class Node:
             self.state = 'Follower'
             self.reset_election_timer()
 
+            # Check if log contains an entry at prevLogIndex whose term matches prevLogTerm
             if prev_log_index == -1 or (prev_log_index < len(self.log) and self.log[prev_log_index]['term'] == prev_log_term):
                 # Matching log, append any new entries
-                self.log = self.log[:prev_log_index + 1] + entries
+                # Remove any conflicting entries
+                self.log = self.log[:prev_log_index + 1]
+                self.log.extend(entries)
                 success = True
 
                 # Update commit index
                 if leader_commit > self.commit_index:
                     self.commit_index = min(leader_commit, len(self.log) - 1)
                     self.apply_committed_entries()
+            else:
+                success = False
         else:
             success = False
 
@@ -200,7 +213,8 @@ class Node:
             # Append to own log
             entry = {'term': self.current_term, 'value': value}
             self.log.append(entry)
-            self.commit_index = len(self.log) - 1  # For simplicity, commit immediately
+            # For simplicity, immediately commit the entry
+            self.commit_index = len(self.log) - 1
             self.apply_committed_entries()
             # Replicate to followers
             for node_name in NODES:
@@ -215,6 +229,9 @@ class Node:
         self.voted_for = self.name
         self.votes_received = 1  # Vote for self
         self.reset_election_timer()
+        self.leader_name = None
+
+        print(f"[{self.name}] Starting election for term {self.current_term}")
 
         last_log_index = len(self.log) - 1
         last_log_term = self.log[last_log_index]['term'] if last_log_index >= 0 else 0
@@ -235,12 +252,17 @@ class Node:
         if response:
             if response['vote_granted']:
                 self.votes_received += 1
+                print(f"[{self.name}] Received vote from {node_name} for term {self.current_term}")
                 if self.votes_received > len(NODES) // 2 and self.state == 'Candidate':
                     self.become_leader()
             elif response['term'] > self.current_term:
                 self.current_term = response['term']
                 self.state = 'Follower'
                 self.voted_for = None
+                self.reset_election_timer()
+        else:
+            # No response from node
+            pass
 
     def become_leader(self):
         self.state = 'Leader'
@@ -260,15 +282,8 @@ class Node:
                 response = s.recv(4096).decode()
                 return json.loads(response)
         except Exception as e:
-            print(f"[{self.name}] RPC to {ip}:{port} failed: {e}")
+            #print(f"[{self.name}] RPC to {ip}:{port} failed: {e}")
             return None
-
-    def wait_for_leader(self):
-        # Wait for election timeout
-        if self.election_timer <= 0:
-            self.start_election()
-        else:
-            self.election_timer -= 0.1
 
     def trigger_leader_change(self):
         if self.state == 'Leader':
