@@ -300,24 +300,6 @@ class Node:
         # Send immediate heartbeat
         self.send_heartbeats()
 
-    # def become_leader(self):
-    #     print(f"[{self.name}] Becoming leader for term {self.current_term}")
-    #     self.state = 'Leader'
-    #     self.leader_id = self.name
-        
-    #     # Initialize leader state
-    #     self.next_index = {
-    #         node: len(self.log) 
-    #         for node in NODES if node != self.name
-    #     }
-    #     self.match_index = {
-    #         node: -1 
-    #         for node in NODES if node != self.name
-    #     }
-        
-    #     # Send immediate heartbeat
-    #     self.send_heartbeats()
-
     def send_heartbeats(self):
         for node_name in NODES:
             if node_name != self.name:
@@ -358,7 +340,7 @@ class Node:
             self.apply_committed_entries()
             return {'success': True}
         else:
-            # Roll back if replication failed
+            # Roll back if replication failed, FIFO
             self.log.pop()
             return {'success': False}
 
@@ -372,8 +354,7 @@ class Node:
             self.match_index[follower_name] = len(self.log) - 1
             return True
         elif response:
-            # If failed, decrement next_index and retry
-            self.next_index[follower_name] = max(0, self.next_index[follower_name] - 1)
+            self.next_index[follower_name] = max(0, self.next_index[follower_name] - 1) # If failed, decrement next_index and retry
         return False
 
     def send_append_entries(self, follower_name, entries):
