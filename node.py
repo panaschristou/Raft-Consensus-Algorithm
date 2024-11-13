@@ -19,41 +19,38 @@ class Node:
         self.log = []  # List of log entries: [{'term': term, 'value': value}]
         self.commit_index = -1
         self.last_applied = -1
-        self.next_index = {}  # For leader to keep track of next log index to send to each follower
-        self.match_index = {}  # For leader to keep track of highest log index known to be replicated
+        self.next_index = {}
+        self.match_index = {}
         self.votes_received = 0
         self.leader_name = None
         self.election_timer = None
         self.heartbeat_timer = None
         self.server_socket = None
         self.running = True
+        self.lock = threading.Lock()
 
     def start(self):
-        # Start the server thread to listen for incoming RPCs
         server_thread = threading.Thread(target=self.run_server)
-        server_thread.daemon = True  # Ensure the server thread exits when the main thread does
+        server_thread.daemon = True
         server_thread.start()
 
-        # Start the election timer
         self.reset_election_timer()
 
-        # Main loop
         while self.running:
             time.sleep(0.1)
-            if self.state == 'Leader':
-                # Leader sends heartbeats at regular intervals
-                if self.heartbeat_timer <= 0:
-                    self.send_heartbeats()
-                    self.heartbeat_timer = HEARTBEAT_INTERVAL
+            with self.lock:
+                if self.state == 'Leader':
+                    if self.heartbeat_timer <= 0:
+                        self.send_heartbeats()
+                        self.heartbeat_timer = HEARTBEAT_INTERVAL
+                    else:
+                        self.heartbeat_timer -= 0.1
                 else:
-                    self.heartbeat_timer -= 0.1
-            else:
-                # Follower or Candidate
-                if self.election_timer <= 0:
-                    print(f"[{self.name}] Election timeout. Starting election.")
-                    self.start_election()
-                else:
-                    self.election_timer -= 0.1
+                    if self.election_timer <= 0:
+                        print(f"[{self.name}] Election timeout. Starting election.")
+                        self.start_election()
+                    else:
+                        self.election_timer -= 0.1
 
     def run_server(self):
         # Create a TCP server socket
@@ -101,71 +98,86 @@ class Node:
         self.election_timer = self.election_timeout
 
     def handle_request_vote(self, data):
-        term = data['term']
-        candidate_name = data['candidate_name']
-        last_log_index = data['last_log_index']
-        last_log_term = data['last_log_term']
-        vote_granted = False
+        with self.lock:
+            term = data['term']
+            candidate_name = data['candidate_name']
+            last_log_index = data['last_log_index']
+            last_log_term = data['last_log_term']
+            vote_granted = False
 
-        if term > self.current_term:
-            self.current_term = term
-            self.voted_for = None
-            self.state = 'Follower'
+            if term > self.current_term:
+                self.current_term = term
+                self.voted_for = None
+                self.state = 'Follower'
 
-        if term == self.current_term and (self.voted_for is None or self.voted_for == candidate_name):
-            if self.is_candidate_log_up_to_date(last_log_index, last_log_term):
-                self.voted_for = candidate_name
-                vote_granted = True
-                self.reset_election_timer()
-                print(f"[{self.name}] Voted for {candidate_name} in term {self.current_term}")
+            if term == self.current_term and (self.voted_for is None or self.voted_for == candidate_name):
+                if self.is_candidate_log_up_to_date(last_log_index, last_log_term):
+                    self.voted_for = candidate_name
+                    vote_granted = True
+                    self.reset_election_timer()
+                    print(f"[{self.name}] Voted for {candidate_name} in term {self.current_term}")
 
-        response = {'term': self.current_term, 'vote_granted': vote_granted}
-        return response
+            response = {'term': self.current_term, 'vote_granted': vote_granted}
+            return response
 
-    def is_candidate_log_up_to_date(self, last_log_index, last_log_term):
-        if not self.log:
+    def is_candidate_log_up_to_date(self, candidate_last_log_index, candidate_last_log_term):
+        # A candidate's log is at least as up-to-date as a voter’s log if:
+        # 1. The candidate's last log term is greater than the voter’s last log term.
+        # 2. If the last log terms are equal, then the candidate's last log index is at least as great as the voter’s.
+
+        if len(self.log) == 0:
+            # Voter has no entries
             return True
-        last_entry = self.log[-1]
-        if last_log_term != last_entry['term']:
-            return last_log_term > last_entry['term']
+
+        last_log_index = len(self.log) - 1
+        last_log_term = self.log[-1]['term']
+
+        if candidate_last_log_term > last_log_term:
+            return True
+        elif candidate_last_log_term == last_log_term:
+            return candidate_last_log_index >= last_log_index
         else:
-            return last_log_index >= len(self.log) - 1
+            return False
 
     def handle_append_entries(self, data):
-        term = data['term']
-        leader_name = data['leader_name']
-        prev_log_index = data['prev_log_index']
-        prev_log_term = data['prev_log_term']
-        entries = data['entries']
-        leader_commit = data['leader_commit']
+        with self.lock:
+            term = data['term']
+            leader_name = data['leader_name']
+            prev_log_index = data['prev_log_index']
+            prev_log_term = data['prev_log_term']
+            entries = data['entries']
+            leader_commit = data['leader_commit']
 
-        success = False
-
-        if term >= self.current_term:
-            self.current_term = term
-            self.leader_name = leader_name
-            self.state = 'Follower'
-            self.reset_election_timer()
-
-            # Check if log contains an entry at prevLogIndex whose term matches prevLogTerm
-            if prev_log_index == -1 or (prev_log_index < len(self.log) and self.log[prev_log_index]['term'] == prev_log_term):
-                # Matching log, append any new entries
-                # Remove any conflicting entries
-                self.log = self.log[:prev_log_index + 1]
-                self.log.extend(entries)
-                success = True
-
-                # Update commit index
-                if leader_commit > self.commit_index:
-                    self.commit_index = min(leader_commit, len(self.log) - 1)
-                    self.apply_committed_entries()
-            else:
-                success = False
-        else:
             success = False
 
-        response = {'term': self.current_term, 'success': success}
-        return response
+            if term >= self.current_term:
+                if term > self.current_term:
+                    self.current_term = term
+                    self.voted_for = None
+
+                self.leader_name = leader_name
+                self.state = 'Follower'
+                self.reset_election_timer()
+
+                # Check if log contains an entry at prevLogIndex whose term matches prevLogTerm
+                if prev_log_index == -1 or (prev_log_index < len(self.log) and self.log[prev_log_index]['term'] == prev_log_term):
+                    # Matching log, append any new entries
+                    # Remove any conflicting entries
+                    self.log = self.log[:prev_log_index + 1]
+                    self.log.extend(entries)
+                    success = True
+
+                    # Update commit index
+                    if leader_commit > self.commit_index:
+                        self.commit_index = min(leader_commit, len(self.log) - 1)
+                        self.apply_committed_entries()
+                else:
+                    success = False
+            else:
+                success = False
+
+            response = {'term': self.current_term, 'success': success}
+            return response
 
     def apply_committed_entries(self):
         while self.last_applied < self.commit_index:
@@ -183,62 +195,105 @@ class Node:
     def send_heartbeats(self):
         for node_name in NODES:
             if node_name != self.name:
-                threading.Thread(target=self.send_append_entries, args=(node_name, [])).start()
+                threading.Thread(target=self.replicate_log_entries, args=(node_name,)).start()
 
-    def send_append_entries(self, node_name, entries):
-        node_info = NODES[node_name]
-        prev_log_index = len(self.log) - 1
-        prev_log_term = self.log[prev_log_index]['term'] if prev_log_index >= 0 else 0
+    def replicate_log_entries(self, node_name):
+        while self.running:
+            with self.lock:
+                next_index = self.next_index[node_name]
+                prev_log_index = next_index - 1
+                prev_log_term = self.log[prev_log_index]['term'] if prev_log_index >= 0 else 0
 
-        data = {
-            'term': self.current_term,
-            'leader_name': self.name,
-            'prev_log_index': prev_log_index,
-            'prev_log_term': prev_log_term,
-            'entries': entries,
-            'leader_commit': self.commit_index,
-        }
-        response = self.send_rpc(node_info['ip'], node_info['port'], 'AppendEntries', data)
-        if response:
-            if not response['success']:
-                # If AppendEntries fails, decrement next_index and retry (not implemented here)
-                pass
+                entries = self.log[next_index:]  # Entries to send
+
+                data = {
+                    'term': self.current_term,
+                    'leader_name': self.name,
+                    'prev_log_index': prev_log_index,
+                    'prev_log_term': prev_log_term,
+                    'entries': entries,
+                    'leader_commit': self.commit_index,
+                }
+
+            response = self.send_rpc(NODES[node_name]['ip'], NODES[node_name]['port'], 'AppendEntries', data)
+            if response:
+                with self.lock:
+                    if response['term'] > self.current_term:
+                        self.current_term = response['term']
+                        self.state = 'Follower'
+                        self.voted_for = None
+                        self.reset_election_timer()
+                        return
+                    elif response['success']:
+                        # Update nextIndex and matchIndex
+                        self.match_index[node_name] = len(self.log) - 1
+                        self.next_index[node_name] = len(self.log)
+                        # Update commit index if necessary
+                        self.update_commit_index()
+                        return  # Entries replicated successfully
+                    else:
+                        # Decrement nextIndex and retry
+                        self.next_index[node_name] = max(0, self.next_index[node_name] - 1)
+            else:
+                # No response, stop trying
+                return
+
+    def update_commit_index(self):
+        # Leader considers whether any new entries can be committed
+        N = self.commit_index + 1
+        while N < len(self.log):
+            count = 1  # Leader has this entry
+            for node in self.match_index:
+                if self.match_index[node] >= N:
+                    count += 1
+            if count > len(NODES) // 2 and self.log[N]['term'] == self.current_term:
+                self.commit_index = N
+                self.apply_committed_entries()
+                N += 1
+            else:
+                break
 
     def handle_client_submit(self, data):
         value = data['value']
-        if self.state != 'Leader':
-            response = {'redirect': True, 'leader_name': self.leader_name}
-            return response
-        else:
-            # Append to own log
-            entry = {'term': self.current_term, 'value': value}
-            self.log.append(entry)
-            # For simplicity, immediately commit the entry
-            self.commit_index = len(self.log) - 1
-            self.apply_committed_entries()
-            # Replicate to followers
-            for node_name in NODES:
-                if node_name != self.name:
-                    threading.Thread(target=self.send_append_entries, args=(node_name, [entry])).start()
-            response = {'success': True}
-            return response
+        with self.lock:
+            if self.state != 'Leader':
+                response = {'redirect': True, 'leader_name': self.leader_name}
+                return response
+            else:
+                # Append to own log
+                entry = {'term': self.current_term, 'value': value}
+                self.log.append(entry)
+                # Initialize nextIndex and matchIndex if not already
+                for node_name in NODES:
+                    if node_name != self.name:
+                        if node_name not in self.next_index:
+                            self.next_index[node_name] = len(self.log)
+                        if node_name not in self.match_index:
+                            self.match_index[node_name] = -1
+                # Start replication to followers
+                for node_name in NODES:
+                    if node_name != self.name:
+                        threading.Thread(target=self.replicate_log_entries, args=(node_name,)).start()
+                response = {'success': True}
+                return response
 
     def start_election(self):
-        self.state = 'Candidate'
-        self.current_term += 1
-        self.voted_for = self.name
-        self.votes_received = 1  # Vote for self
-        self.reset_election_timer()
-        self.leader_name = None
+        with self.lock:
+            self.state = 'Candidate'
+            self.current_term += 1
+            self.voted_for = self.name
+            self.votes_received = 1  # Vote for self
+            self.reset_election_timer()
+            self.leader_name = None
 
-        print(f"[{self.name}] Starting election for term {self.current_term}")
+            print(f"[{self.name}] Starting election for term {self.current_term}")
 
-        last_log_index = len(self.log) - 1
-        last_log_term = self.log[last_log_index]['term'] if last_log_index >= 0 else 0
+            last_log_index = len(self.log) - 1
+            last_log_term = self.log[last_log_index]['term'] if last_log_index >= 0 else 0
 
-        for node_name in NODES:
-            if node_name != self.name:
-                threading.Thread(target=self.send_request_vote, args=(node_name, last_log_index, last_log_term)).start()
+            for node_name in NODES:
+                if node_name != self.name:
+                    threading.Thread(target=self.send_request_vote, args=(node_name, last_log_index, last_log_term)).start()
 
     def send_request_vote(self, node_name, last_log_index, last_log_term):
         node_info = NODES[node_name]
@@ -250,27 +305,35 @@ class Node:
         }
         response = self.send_rpc(node_info['ip'], node_info['port'], 'RequestVote', data)
         if response:
-            if response['vote_granted']:
-                self.votes_received += 1
-                print(f"[{self.name}] Received vote from {node_name} for term {self.current_term}")
-                if self.votes_received > len(NODES) // 2 and self.state == 'Candidate':
-                    self.become_leader()
-            elif response['term'] > self.current_term:
-                self.current_term = response['term']
-                self.state = 'Follower'
-                self.voted_for = None
-                self.reset_election_timer()
+            with self.lock:
+                if self.state != 'Candidate':
+                    return
+                if response['term'] > self.current_term:
+                    self.current_term = response['term']
+                    self.state = 'Follower'
+                    self.voted_for = None
+                    self.reset_election_timer()
+                elif response['vote_granted']:
+                    self.votes_received += 1
+                    print(f"[{self.name}] Received vote from {node_name} for term {self.current_term}")
+                    if self.votes_received > len(NODES) // 2 and self.state == 'Candidate':
+                        self.become_leader()
         else:
             # No response from node
             pass
 
     def become_leader(self):
-        self.state = 'Leader'
-        self.leader_name = self.name
-        self.next_index = {node_name: len(self.log) for node_name in NODES if node_name != self.name}
-        self.match_index = {node_name: -1 for node_name in NODES if node_name != self.name}
-        print(f"[{self.name}] Became leader in term {self.current_term}")
-        self.heartbeat_timer = 0  # Send immediate heartbeat
+        with self.lock:
+            self.state = 'Leader'
+            self.leader_name = self.name
+            # Initialize nextIndex and matchIndex for each follower
+            next_index = len(self.log)
+            for node_name in NODES:
+                if node_name != self.name:
+                    self.next_index[node_name] = next_index
+                    self.match_index[node_name] = -1
+            print(f"[{self.name}] Became leader in term {self.current_term}")
+            self.heartbeat_timer = 0  # Send immediate heartbeat
 
     def send_rpc(self, ip, port, rpc_type, data):
         try:
@@ -282,29 +345,31 @@ class Node:
                 response = s.recv(4096).decode()
                 return json.loads(response)
         except Exception as e:
-            #print(f"[{self.name}] RPC to {ip}:{port} failed: {e}")
+            # print(f"[{self.name}] RPC to {ip}:{port} failed: {e}")
             return None
 
     def trigger_leader_change(self):
-        if self.state == 'Leader':
-            print(f"[{self.name}] Leader change triggered")
-            self.state = 'Follower'
-            self.voted_for = None
-            self.leader_name = None
-            self.reset_election_timer()
-            return {'status': 'Leader stepping down'}
-        else:
-            return {'status': 'Not a leader'}
+        with self.lock:
+            if self.state == 'Leader':
+                print(f"[{self.name}] Leader change triggered")
+                self.state = 'Follower'
+                self.voted_for = None
+                self.leader_name = None
+                self.reset_election_timer()
+                return {'status': 'Leader stepping down'}
+            else:
+                return {'status': 'Not a leader'}
 
     def simulate_crash(self):
-        print(f"[{self.name}] Simulating crash")
-        self.log = []
-        self.commit_index = -1
-        self.last_applied = -1
-        # Optionally delete the log file
-        filename = f"{self.name}_CISC6935"
-        open(filename, 'w').close()
-        return {'status': 'Node crashed'}
+        with self.lock:
+            print(f"[{self.name}] Simulating crash")
+            self.log = []
+            self.commit_index = -1
+            self.last_applied = -1
+            # Optionally delete the log file
+            filename = f"{self.name}_CISC6935"
+            open(filename, 'w').close()
+            return {'status': 'Node crashed'}
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
