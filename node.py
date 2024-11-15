@@ -95,8 +95,10 @@ class Node:
                         response = self.handle_client_submit(request['data'])
                     elif rpc_type == 'TriggerLeaderChange':
                         response = self.trigger_leader_change()
-                    elif rpc_type == 'SimulateCrash':
-                        response = self.simulate_crash()
+                    elif rpc_type == 'SimulateCrashLeader':
+                        response = self.simulate_crash_leader()
+                    elif rpc_type == 'SimulateCrashNode':
+                        response = self.simulate_crash_node()
                     else:
                         response = {'error': 'Unknown RPC type'}
 
@@ -389,7 +391,21 @@ class Node:
             return {'status': 'Leader stepping down'}
         return {'status': 'Not a leader'}
 
-    def simulate_crash(self):
+    def simulate_crash_leader(self):
+        if self.state == 'Leader':
+            print(f"[{self.name}] Simulating crash")
+            self.log = []
+            self.commit_index = -1
+            self.last_applied = -1
+            self.current_term = 0
+            self.voted_for = None
+            self.state = 'Follower'
+            
+            # Clear log file
+            open(self.log_filename, 'w').close()
+            return {'status': 'Leader crashed'}
+        
+    def simulate_crash_node(self):
         print(f"[{self.name}] Simulating crash")
         self.log = []
         self.commit_index = -1

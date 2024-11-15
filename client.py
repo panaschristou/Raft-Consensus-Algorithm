@@ -60,13 +60,21 @@ def trigger_leader_change():
             return
     print("No leader found to step down.")
 
-def simulate_crash():
+def simulate_crash_leader():
     for node_name in NODES:
         node_info = NODES[node_name]
-        response = send_rpc(node_info['ip'], node_info['port'], 'SimulateCrash', {})
-        if response and response.get('status') == 'Node crashed':
+        response = send_rpc(node_info['ip'], node_info['port'], 'SimulateCrashLeader', {})
+        if response and response.get('status') == 'Leader crashed':
             print(f"Node {node_name} has simulated a crash.")
             return
+    print("No node could simulate a crash.")
+    
+def simulate_crash_node(node_name):
+    node_info = NODES[node_name]
+    response = send_rpc(node_info['ip'], node_info['port'], 'SimulateCrashNode', {})
+    if response and response.get('status') == 'Node crashed':
+        print(f"Node {node_name} has simulated a crash.")
+        return
     print("No node could simulate a crash.")
 
 if __name__ == '__main__':
@@ -74,7 +82,8 @@ if __name__ == '__main__':
         print("Usage:")
         print("  python client.py submit [value]")
         print("  python client.py leader_change")
-        print("  python client.py simulate_crash")
+        print("  python client.py simulate_crash_leader")
+        print("  python client.py simulate_crash_node [node_name]")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -87,7 +96,9 @@ if __name__ == '__main__':
         submit_value(value)
     elif command == 'leader_change':
         trigger_leader_change()
-    elif command == 'simulate_crash':
-        simulate_crash()
+    elif command == 'simulate_crash_leader':
+        simulate_crash_leader()
+    elif command == 'simulate_crash_node':
+        simulate_crash_node(sys.argv[2])
     else:
         print("Unknown command.")

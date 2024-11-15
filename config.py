@@ -1,9 +1,9 @@
 # config.py
 
 NODES = {
-    'node1': {'ip': '10.128.0.4', 'port': 5000},
-    'node2': {'ip': '10.128.0.5', 'port': 5000},
-    'node3': {'ip': '10.128.0.6', 'port': 5000},
+    'node1': {'ip': 'localhost', 'port': 5001},
+    'node2': {'ip': 'localhost', 'port': 5002},
+    'node3': {'ip': 'localhost', 'port': 5003},
 }
 
 # Timeout settings (in seconds)
