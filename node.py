@@ -172,13 +172,19 @@ class Node:
         prev_log_term = data['prev_log_term']
         entries = data['entries']
         leader_commit = data['leader_commit']
+        
+        # Log receipt of AppendEntries
+        print(f"[{self.name}] Received AppendEntries from Leader {leader_id}. Term: {leader_term}, Current Term: {self.current_term}")
+        print(f"[{self.name}] PrevLogIndex: {prev_log_index}, PrevLogTerm: {prev_log_term}, Entries: {entries}, LeaderCommit: {leader_commit}")
 
         # Reply false if term < currentTerm
         if leader_term < self.current_term:
+            print(f"[{self.name}] AppendEntries rejected: Leader term {leader_term} is less than current term {self.current_term}.")
             return {'term': self.current_term, 'success': False}
 
         # Update term if leaderTerm > currentTerm
         if leader_term > self.current_term:
+            print(f"[{self.name}] Updating term to {leader_term} and converting to Follower.")
             self.current_term = leader_term
             self.voted_for = None
 
@@ -189,6 +195,7 @@ class Node:
 
         # Check log consistency. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
         if prev_log_index >= len(self.log):
+            print(f"[{self.name}] AppendEntries failed: PrevLogIndex {prev_log_index} out of bounds (Log Length: {len(self.log)}).")
             return {'term': self.current_term, 'success': False}
         
         # If an existing entry conflicts with a new one, delete the existing entry and all that follow it
@@ -196,10 +203,12 @@ class Node:
             prev_log_index >= len(self.log) or
             self.log[prev_log_index]['term'] != prev_log_term
         ):
+            print(f"[{self.name}] Log inconsistency detected at PrevLogIndex {prev_log_index}. Term mismatch.")
             return {'term': self.current_term, 'success': False}
 
         # Process new entries
         if entries:
+            print(f"[{self.name}] Appending new entries to the log.")
             # Delete conflicting entries by using the previous log index
             self.log = self.log[:prev_log_index + 1]
             # Append new entries to ensure consistency
@@ -211,6 +220,7 @@ class Node:
             # Set commit index to the minimum of leader commit and the last index in the log
             # `commitIndex` is the index of the highest log entry known to be committed
             self.commit_index = min(leader_commit, len(self.log) - 1)
+            print(f"[{self.name}] Commit index updated to {self.commit_index}.")
             # Apply committed entries to the state machine
             self.apply_committed_entries()
 
