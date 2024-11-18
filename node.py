@@ -423,9 +423,19 @@ class Node:
             self.reset_election_timer()
             return {'status': 'Leader stepping down'}
         return {'status': 'Not a leader'}
-
+    
     def simulate_crash_leader(self):
         if self.state == 'Leader':
+            print(f"[{self.name}] Simulating leader crash...")
+            
+            # Append an uncommitted entry before crashing
+            uncommitted_entry = {'term': self.current_term, 'command': 'uncommitted_entry'}
+            self.log.append(uncommitted_entry)
+            print(f"[{self.name}] Appended uncommitted entry: {uncommitted_entry}")
+
+            # Print the current log before crashing
+            print(f"[{self.name}] Current log before crash: {self.log}")
+
             # Simulating a crash by clearing the log and resetting the state
             # We set commit_index and last_applied to -1 to indicate that no entries have been committed or applied
             # We set current_term to 0 to indicate that the term is not set
@@ -438,24 +448,80 @@ class Node:
             self.current_term = 0
             self.voted_for = None
             self.state = 'Follower'
+            print(f"[{self.name}] Cleared state and transitioned to FOLLOWER after crash.")
             
-            # Clear log file
+            # Clear the log file
             open(self.log_filename, 'w').close()
+            print(f"[{self.name}] Cleared log file for persistent storage.")
+
+            # Notify followers to initiate a new leader election
+            for node_name in NODES:
+                if node_name != self.name:
+                    try:
+                        self.send_rpc(
+                            NODES[node_name]['ip'],
+                            NODES[node_name]['port'],
+                            'TriggerLeaderChange',
+                            {}
+                        )
+                        print(f"[{self.name}] Notified follower {node_name} to start election.")
+                    except Exception as e:
+                        print(f"[{self.name}] Error notifying {node_name}: {e}")
+
             return {'status': 'Leader crashed'}
         
+        print(f"[{self.name}] This node is not a leader; cannot simulate leader crash.")
+        return {'status': 'Not a leader'}
+    
     def simulate_crash_node(self):
-        print(f"[{self.name}] Simulating crash")
-        # Simulating a crash by clearing the log and resetting the state
-        self.log = []
+        print(f"[{self.name}] Simulating node crash...")
+
+        # Print the current log before truncating it
+        print(f"[{self.name}] Log before crash: {self.log}")
+
+        # Truncate the log to simulate missing entries
+        if len(self.log) > 1:
+            self.log = self.log[:len(self.log) // 2]
+            print(f"[{self.name}] Truncated log to simulate inconsistency: {self.log}")
+
+        # Clear the node's state
         self.commit_index = -1
         self.last_applied = -1
         self.current_term = 0
         self.voted_for = None
         self.state = 'Follower'
-        
-        # Clear log file
+        print(f"[{self.name}] Cleared state and transitioned to FOLLOWER after crash.")
+
+        # Clear the log file
         open(self.log_filename, 'w').close()
-        return {'status': 'Node crashed'}
+        print(f"[{self.name}] Cleared log file for persistent storage.")
+
+        # Simulate downtime and rejoin
+        time.sleep(5)
+        print(f"[{self.name}] Node rejoining the cluster...")
+
+        # Rejoin the cluster by requesting log synchronization
+        if self.leader_id:
+            try:
+                self.send_rpc(
+                    NODES[self.leader_id]['ip'],
+                    NODES[self.leader_id]['port'],
+                    'AppendEntries',
+                    {
+                        'term': self.current_term,
+                        'leader_name': self.leader_id,
+                        'prev_log_index': len(self.log) - 1,
+                        'prev_log_term': self.log[-1]['term'] if self.log else 0,
+                        'entries': [],
+                        'leader_commit': self.commit_index
+                    }
+                )
+                print(f"[{self.name}] Requested log synchronization from leader {self.leader_id}.")
+            except Exception as e:
+                print(f"[{self.name}] Error rejoining the cluster: {e}")
+        
+        return {'status': 'Node rejoined after crash'}
+
 
     def send_rpc(self, ip, port, rpc_type, data, timeout=2.0):
         try:
