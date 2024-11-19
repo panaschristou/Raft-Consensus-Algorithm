@@ -578,9 +578,9 @@ class Node:
     def simulate_crash(self):
         """
         Simulates a crash by:
-        1. If leader: appends entries to log before becoming unavailable
-        2. Stops processing RPCs during sleep
-        3. Maintains log state for demonstrating consistency
+        1. If leader: appends entries to log before sleeping
+        2. Maintains volatile state to demonstrate log consistency
+        3. Sleeps to allow new leader election and updates
         """
         print(f"\n[{self.name}] Simulating crash...")
         
@@ -596,18 +596,19 @@ class Node:
             print(f"[{self.name}] Commit index: {self.commit_index}")
         
         # Print current state before sleep
-        print(f"[{self.name}] Pre-crash state:")
+        print(f"[{self.name}] Pre-sleep state:")
         print(f"[{self.name}] Current role: {self.state}")
         print(f"[{self.name}] Current term: {self.current_term}")
         print(f"[{self.name}] Log entries: {self.log}")
         
-        # Set a flag to ignore incoming RPCs during sleep
-        self.running = False
-        print(f"[{self.name}] Going to sleep for 100 seconds to allow new leader election...")
-        time.sleep(100)
+        # Reset state to trigger election in other nodes
+        self.state = 'Follower'
+        self.leader_id = None
+        self.voted_for = None
+        self.election_timer = 0  # Force election timeout
         
-        # Resume participation
-        self.running = True
+        print(f"[{self.name}] Going to sleep for 20 seconds to allow new leader election...")
+        time.sleep(20)
         print(f"[{self.name}] Node rejoining cluster with log: {self.log}")
         
         return {'status': 'Node crashed'}
