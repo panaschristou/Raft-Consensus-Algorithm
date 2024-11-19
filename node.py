@@ -601,16 +601,14 @@ class Node:
         
         print(f"\n[{self.name}] Simulating crash...")
         
-        # If leader, append some entries before crashing
-        if self.state == 'Leader':
-            crash_entries = [
-                {'term': self.current_term, 'value': 'crash_entry_1', 'index': len(self.log)},
-                {'term': self.current_term, 'value': 'crash_entry_2', 'index': len(self.log) + 1}
-            ]
-            self.log.extend(crash_entries)
-            print(f"[{self.name}] Leader appended entries before crash: {crash_entries}")
-            print(f"[{self.name}] Current log: {self.log}")
-            print(f"[{self.name}] Commit index: {self.commit_index}")
+        crash_entries = [
+            {'term': self.current_term, 'value': 'crash_entry_1', 'index': len(self.log)},
+            {'term': self.current_term, 'value': 'crash_entry_2', 'index': len(self.log) + 1}
+        ]
+        self.log.extend(crash_entries)
+        print(f"[{self.name}] Leader appended entries before crash: {crash_entries}")
+        print(f"[{self.name}] Current log: {self.log}")
+        print(f"[{self.name}] Commit index: {self.commit_index}")
         
         # Print current state before sleep
         print(f"[{self.name}] Pre-sleep state:")
