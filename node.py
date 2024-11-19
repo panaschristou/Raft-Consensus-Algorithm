@@ -577,18 +577,34 @@ class Node:
 
     def simulate_crash(self):
         """
-        Simulates a crash by resetting the node's state to follower. This is called by the client to simulate a crash.
+        Simulates a crash by:
+        1. If leader: appends entries to log before becoming unavailable
+        2. Maintains volatile state to demonstrate log consistency
+        3. Sleeps to allow new leader election and updates
         """
-        print(f"[{self.name}] Simulating crash")
-        self.log = []
-        self.commit_index = -1
-        self.last_applied = -1
-        self.current_term = 0
-        self.voted_for = None
-        self.state = 'Follower'
+        print(f"\n[{self.name}] Simulating crash...")
         
-        # Clear log file
-        open(self.log_filename, 'w').close()
+        # If leader, append some entries before crashing
+        if self.state == 'Leader':
+            crash_entries = [
+                {'term': self.current_term, 'value': 'crash_entry_1', 'index': len(self.log)},
+                {'term': self.current_term, 'value': 'crash_entry_2', 'index': len(self.log) + 1}
+            ]
+            self.log.extend(crash_entries)
+            print(f"[{self.name}] Leader appended entries before crash: {crash_entries}")
+            print(f"[{self.name}] Current log: {self.log}")
+            print(f"[{self.name}] Commit index: {self.commit_index}")
+        
+        # Print current state before sleep
+        print(f"[{self.name}] Pre-sleep state:")
+        print(f"[{self.name}] Current role: {self.state}")
+        print(f"[{self.name}] Current term: {self.current_term}")
+        print(f"[{self.name}] Log entries: {self.log}")
+        
+        print(f"[{self.name}] Going to sleep for 20 seconds to allow new leader election...")
+        time.sleep(20)
+        print(f"[{self.name}] Node rejoining cluster with log: {self.log}")
+        
         return {'status': 'Node crashed'}
 
     def send_rpc(self, ip, port, rpc_type, data, timeout=2.0):

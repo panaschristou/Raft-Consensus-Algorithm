@@ -85,6 +85,7 @@ if __name__ == '__main__':
     elif command == 'leader_change':
         trigger_leader_change()
     elif command == 'simulate_crash':
-        simulate_crash()
+        node_name = sys.argv[2]
+        simulate_crash(node_name)
     else:
         print("Unknown command.")
