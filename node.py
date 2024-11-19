@@ -39,7 +39,7 @@ class Node:
         self.lock = threading.Lock() # Lock for thread-safe operations
 
         # Persistent storage
-        self.log_filename = f"{self.name}_CISC6935.txt"  # File for persistent log storage
+        self.log_filename = f"{self.name}_lab2Raft.txt"  # File for persistent log storage
         ## Initialize or load persistent log
         if not os.path.exists(self.log_filename):
             open(self.log_filename, 'w').close()   # Create empty log file if doesn't exist
