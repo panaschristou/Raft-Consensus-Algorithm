@@ -37,6 +37,7 @@ class Node:
         self.recovery_timeout = 5  # seconds between recovery attempts
         # Thread safety
         self.lock = threading.Lock() # Lock for thread-safe operations
+        self.simulating_crash_ongoing = False  # Flag to prevent multiple crash simulations or exceptions
 
         # Persistent storage
         self.log_filename = f"{self.name}_lab2Raft.txt"  # File for persistent log storage
@@ -107,7 +108,7 @@ class Node:
                 client_thread.daemon = True  # Thread will terminate when main program exits
                 client_thread.start()
             except Exception as e:
-                if self.running:
+                if self.running and self.simulating_crash_ongoing == False:
                     print(f"[{self.name}] Server error: {e}")
 
     def load_persistent_log(self):
@@ -594,8 +595,10 @@ class Node:
         Simulates a crash by:
         1. If leader: appends entries to log before sleeping
         2. Maintains volatile state to demonstrate log consistency
-        3. Sleeps to allow new leader election and updates
+        3. Temporarily disconnects from network to allow new leader election
         """
+        self.simulating_crash_ongoing = True
+        
         print(f"\n[{self.name}] Simulating crash...")
         
         # If leader, append some entries before crashing
@@ -615,14 +618,21 @@ class Node:
         print(f"[{self.name}] Current term: {self.current_term}")
         print(f"[{self.name}] Log entries: {self.log}")
         
-        # Reset state to trigger election in other nodes
-        self.state = 'Follower'
-        self.leader_id = None
-        self.voted_for = None
-        self.election_timer = 0  # Force election timeout
+        # Close current socket
+        if self.server_socket:
+            self.server_socket.close()
+            self.server_socket = None
         
         print(f"[{self.name}] Going to sleep for 20 seconds to allow new leader election...")
         time.sleep(20)
+        
+        # Create and bind new socket
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((self.ip, self.port))
+        self.server_socket.listen(5)
+        
+        self.simulating_crash_ongoing = False
         print(f"[{self.name}] Node rejoining cluster with log: {self.log}")
         
         return {'status': 'Node crashed'}
