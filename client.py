@@ -45,6 +45,18 @@ def submit_value(value):
     print("Failed to submit value to the cluster - no leader available")
     return False
 
+def print_all_logs():
+    """Print logs from all nodes in the cluster"""
+    print("\nRequesting logs from all nodes...")
+    for node_name in NODES:
+        node_info = NODES[node_name]
+        print(f"\nContacting node {node_name}...")
+        response = send_rpc(node_info['ip'], node_info['port'], 'PrintLog', {})
+        if response:
+            print(f"Successfully got log from {node_name}")
+        else:
+            print(f"Failed to get log from {node_name}")
+
 def trigger_leader_change():
     for node_name in NODES:
         node_info = NODES[node_name]
@@ -87,5 +99,7 @@ if __name__ == '__main__':
     elif command == 'simulate_crash':
         node_name = sys.argv[2]
         simulate_crash(node_name)
+    elif command == 'print_logs':
+        print_all_logs()
     else:
         print("Unknown command.")

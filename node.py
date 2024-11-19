@@ -165,6 +165,9 @@ class Node:
                     elif rpc_type == 'SimulateCrash':
                         # Handle crash simulation requests
                         response = self.simulate_crash()
+                    elif rpc_type == 'PrintLog':
+                        # Handle print log request
+                        response = self.print_node_log()
                     else:
                         response = {'error': 'Unknown RPC type'}
 
@@ -181,6 +184,17 @@ class Node:
         Randomization helps prevent election conflicts.
         """
         self.election_timer = random.uniform(*ELECTION_TIMEOUT)
+        
+    def print_node_log(self):
+        """
+        Prints the node's current log entries and state.
+        """
+        print(f"\n[{self.name}] Current Log State:")
+        print(f"[{self.name}] Role: {self.state}")
+        print(f"[{self.name}] Term: {self.current_term}")
+        print(f"[{self.name}] Commit Index: {self.commit_index}")
+        print(f"[{self.name}] Log Entries: {self.log}\n")
+        return {'status': 'Log printed', 'log': self.log}
 
     def handle_request_vote(self, data: dict):
         """
