@@ -9,254 +9,370 @@ import os
 from config import NODES, ELECTION_TIMEOUT, HEARTBEAT_INTERVAL
 
 class Node:
+    """
+    Represents a node in the Raft consensus algorithm. Implements leader election, log replication, and consensus mechanisms. Also fulfills all the scenarios defined in the assignment.
+    """
     def __init__(self, name):
-        self.name = name
-        self.ip = NODES[self.name]['ip']
-        self.port = NODES[self.name]['port']
-        self.state = 'Follower'
-        self.current_term = 0 # Initialized to 0 as per the Raft paper
-        self.voted_for = None # Initialized to None as per the Raft paper
-        self.log = []  # [{'term': term, 'value': value, 'index': index (Note: First index is 1)}]
-        self.commit_index = -1 # Initialized to 0 as per the Raft paper
-        self.last_applied = -1 # Initialized to 0 as per the Raft paper
-        self.next_index = {}
-        self.match_index = {}
-        self.leader_id = None # No leader yet
-        self.election_timer = None # Initialized in start method
-        self.heartbeat_timer = None # Initialized in start method
-        self.server_socket = None # Initialized in run_server method
-        self.running = True # Flag to control the main loop
-        self.lock = threading.Lock() # Lock to synchronize access to shared variables
-        
-        # Create or clear log file
-        self.log_filename = f"{self.name}_CISC6935.txt"
-        open(self.log_filename, 'w').close()
+        self.name = name # Unique identifier for the node
+        self.ip = NODES[self.name]['ip'] # Node's IP address. This ise defined in the config file
+        self.port = NODES[self.name]['port'] # Node's port number. This is defined in the config file
+        # Raft state
+        self.state = 'Follower' # Current state (Follower/Candidate/Leader)
+        self.current_term = 0 # Current term number
+        self.voted_for = None # Candidate voted for in current term. Initialized to None
+        self.log = []  # [{'term': term, 'value': value, 'index': index}]
+        # For log management
+        self.commit_index = -1 # Index of highest log entry known to be committed
+        self.last_applied = -1 # Index of highest log entry applied to state machine
+        self.next_index = {} # For each server, index of next log entry to send
+        self.match_index = {}  # For each server, index of highest log entry known to be replicated
+        # Leadership attributes
+        self.leader_id = None # Current leader's ID. Every node MUST know who's the current leader
+        self.election_timer = None # Timer for election timeout
+        self.heartbeat_timer = None 
+        self.server_socket = None # Server socket for accepting connections
+        self.running = True
+        self.recovering = False # Flag indicating if node is in recovery
+        self.last_recovery_attempt = 0
+        self.recovery_timeout = 5  # seconds between recovery attempts
+        # Thread safety
+        self.lock = threading.Lock() # Lock for thread-safe operations
+
+        # Persistent storage
+        self.log_filename = f"{self.name}_CISC6935.txt"  # File for persistent log storage
+        ## Initialize or load persistent log
+        if not os.path.exists(self.log_filename):
+            open(self.log_filename, 'w').close()   # Create empty log file if doesn't exist
+        else:
+            self.load_persistent_log()             # Load existing log entries
 
     def start(self):
-        print(f"[{self.name}] Starting node...")
-        server_thread = threading.Thread(target=self.run_server) # Start the server thread
-        server_thread.daemon = True # Set the server thread as a daemon
-        server_thread.start() # Start the server thread
+        """
+        Initializes and starts the node's main operation loop.
+        Handles the node's state machine and election timeout monitoring.
+        """
         
+        print(f"[{self.name}] Starting node...") # Announce node startup
+
+        # Initialize and start server thread for handling incoming connections
+        server_thread = threading.Thread(target=self.run_server)
+        server_thread.daemon = True  # Thread will terminate when main program exits
+        server_thread.start()
+        
+        # Initialize election timeout
         self.reset_election_timer()
         print(f"[{self.name}] Initial election timeout: {self.election_timer}")
 
+        # Main operation loop
         while self.running:
-            with self.lock:
-                current_state = self.state # Get the current state
-                current_timer = self.election_timer # Get the current election timer
+            with self.lock:  # Thread-safe state access
+                current_state = self.state
+                current_timer = self.election_timer
 
-            if current_state == 'Leader': # If the current state is leader
-                self.send_heartbeats() # Send heartbeats to followers
-                time.sleep(HEARTBEAT_INTERVAL) # Sleep for the heartbeat interval
+            if current_state == 'Leader':
+                # Leader responsibilities: send heartbeats
+                self.send_heartbeats()
+                time.sleep(HEARTBEAT_INTERVAL)  # Wait before next heartbeat
             else:
-                if current_timer <= 0: # If the election timer is less than or equal to 0
-                    with self.lock: # Lock the shared variables
-                        if self.state != 'Leader':  # Double-check state
-                            self.start_election() # Start the election
-                time.sleep(0.1)
+                # Follower/Candidate responsibilities: monitor election timeout
+                if current_timer <= 0:
+                    with self.lock:
+                        if self.state != 'Leader':  # Double-check state hasn't changed
+                            self.start_election()
+                time.sleep(0.1)  # Small sleep to prevent CPU overuse
                 with self.lock:
-                    self.election_timer -= 0.1 # Decrement the election timer
+                    self.election_timer -= 0.1  # Decrement election timer
 
     def run_server(self):
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Create a TCP socket
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Set the socket option to reuse the address
-        self.server_socket.bind((self.ip, self.port)) # Bind the socket to the address
-        self.server_socket.listen(5) # Listen for incoming connections
+        """
+        Sets up and runs the TCP server that handles incoming RPC requests.
+        Runs in a separate thread to handle concurrent connections.
+        """
+        
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Initialize TCP socket
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Enable address reuse to prevent "Address already in use" errors
+        # Bind socket to node's IP and port and start listening
+        self.server_socket.bind((self.ip, self.port)) 
+        self.server_socket.listen(5)
+        
         print(f"[{self.name}] Server listening at {self.ip}:{self.port}")
 
+        # Main loop to keep the server running
         while self.running:
             try:
-                client_socket, addr = self.server_socket.accept() # Accept incoming connections
-                client_thread = threading.Thread( # Create a new thread to handle the client connection
-                    target=self.handle_client_connection, # Target method to handle the client connection
-                    args=(client_socket,) # Arguments to pass to the target method
-                )
-                client_thread.daemon = True # Set the client thread as a daemon
-                client_thread.start() # Start the client thread
+                # Accept incoming connection
+                client_socket, _ = self.server_socket.accept()
+                # Create new thread for each client connection
+                client_thread = threading.Thread(target=self.handle_client_connection, args=(client_socket,))
+                client_thread.daemon = True  # Thread will terminate when main program exits
+                client_thread.start()
             except Exception as e:
                 if self.running:
                     print(f"[{self.name}] Server error: {e}")
 
-    def handle_client_connection(self, client_socket): # Handle client connection
+    def load_persistent_log(self):
+        """
+        Loads existing log entries from persistent storage.
+        Reconstructs the log state from disk, maintaining persistence across restarts.
+        """
         try:
-            data = client_socket.recv(4096).decode() # Receive data from the client
+            with open(self.log_filename, 'r') as f:
+                lines = f.readlines()
+                # Reconstruct log entries from stored values
+                for idx, line in enumerate(lines):
+                    entry = {
+                        'term': self.current_term,  # Use current term as we don't store terms
+                        'value': line.strip(),      # Remove any whitespace/newlines
+                        'index': idx                # Maintain original entry ordering
+                    }
+                    self.log.append(entry)
+                
+                # If log exists, update indices to match loaded state
+                if self.log:
+                    self.commit_index = len(self.log) - 1
+                    self.last_applied = self.commit_index
+                    print(f"[{self.name}] Loaded {len(self.log)} entries from persistent storage")
+        except FileNotFoundError:
+            print(f"[{self.name}] No existing log found, starting fresh")
+
+    def handle_client_connection(self, client_socket: socket.socket):
+        """
+        Mananges incoming client connections and RPC requests. It takes a client socket as input.
+        Processes different types of RPCs and returns appropriate responses.
+        """
+        try:
+            
+            data = client_socket.recv(4096).decode() # Receive and decode client request
             if data:
-                request = json.loads(data) # Parse the JSON data
-                rpc_type = request['rpc_type'] # Get the RPC type
-                response = {} # Initialize the response
+                request = json.loads(data) # Parse JSON request
+                rpc_type = request['rpc_type']
+                response = {}
 
+                # Manange different RPC types with thread safety
                 with self.lock:
-                    if rpc_type == 'RequestVote': # If the RPC type is RequestVote handle the vote request
-                        response = self.handle_request_vote(request['data']) 
-                    elif rpc_type == 'AppendEntries': # If the RPC type is AppendEntries handle the append entries request
+                    if rpc_type == 'RequestVote':
+                        # Handle voting requests during leader election
+                        response = self.handle_request_vote(request['data'])
+                    elif rpc_type == 'AppendEntries':
+                        # Handle log replication and heartbeat messages
                         response = self.handle_append_entries(request['data'])
-                    elif rpc_type == 'SubmitValue': # If the RPC type is SubmitValue handle the client submit request
+                    elif rpc_type == 'SubmitValue':
+                        # Handle client value submissions
                         response = self.handle_client_submit(request['data'])
-                    elif rpc_type == 'TriggerLeaderChange': # If the RPC type is TriggerLeaderChange handle the leader change request
+                    elif rpc_type == 'TriggerLeaderChange':
+                        # Handle manual leader step-down requests
                         response = self.trigger_leader_change()
-                    elif rpc_type == 'SimulateCrashLeader': # If the RPC type is SimulateCrashLeader handle the leader crash request
-                        response = self.simulate_crash_leader()
-                    elif rpc_type == 'SimulateCrashNode': # If the RPC type is SimulateCrashNode handle the node crash request
-                        response = self.simulate_crash_node() 
+                    elif rpc_type == 'SimulateCrash':
+                        # Handle crash simulation requests
+                        response = self.simulate_crash()
                     else:
-                        response = {'error': 'Unknown RPC type'} # If the RPC type is unknown, return an error
+                        response = {'error': 'Unknown RPC type'}
 
-                client_socket.sendall(json.dumps(response).encode()) # Send the response to the client
+                # Send response back to client
+                client_socket.sendall(json.dumps(response).encode())
         except Exception as e:
             print(f"[{self.name}] Error handling client connection: {e}")
         finally:
-            client_socket.close() # Close the client socket
+            client_socket.close()  # Ensure socket is closed even if an error occurs
 
     def reset_election_timer(self):
-        self.election_timer = random.uniform(*ELECTION_TIMEOUT) # Randomize the election timeout
+        """
+        Resets the election timeout to a random value within the configured range.
+        Randomization helps prevent election conflicts.
+        """
+        self.election_timer = random.uniform(*ELECTION_TIMEOUT)
 
-    def handle_request_vote(self, data):
-        # Parse data. Get candidate term, candidate id, candidate last log index, and candidate last log term
+    def handle_request_vote(self, data: dict):
+        """
+        Handles incoming RequestVote RPCs from candidates during leader election.
+        Implements Raft's voting rules to maintain consistency and leadership safety.
+        
+        Args:
+            data (dict): Contains voting request information:
+                - term: Candidate's term number
+                - candidate_name: Name of the candidate requesting vote
+                - last_log_index: Index of candidate's last log entry
+                - last_log_term: Term of candidate's last log entry
+                
+        Returns:
+            dict: Response containing:
+                - term: Current term, for candidate to update itself
+                - vote_granted: Boolean indicating if vote was granted
+        """
+        # Extract voting request data
         candidate_term = data['term']
         candidate_id = data['candidate_name']
         candidate_last_log_index = data['last_log_index']
         candidate_last_log_term = data['last_log_term']
-
-        # Reply false if term < currentTerm
+        # Rule 1: If candidate's term is less than current term, reject vote
         if candidate_term < self.current_term:
-            return {
-                'term': self.current_term,
-                'vote_granted': False
-            }
-
-        # Update term if candidateTerm > currentTerm, convert to follower, and reset votedFor and leaderId
+            return {'term': self.current_term, 'vote_granted': False}
+        # Rule 2: If candidate's term is greater, update current term and become follower
         if candidate_term > self.current_term:
             self.current_term = candidate_term
             self.state = 'Follower'
             self.voted_for = None
             self.leader_id = None
 
-        # Check if we can vote for this candidate
+        # Rule 3: Check if we can vote for this candidate. We can only vote if we haven't voted in this term or already voted for this candidate
         can_vote = (self.voted_for is None or self.voted_for == candidate_id)
         
-        # Check if candidate's log is at least as up-to-date as ours
-        # If the logs have last entries with different terms, then the log with the later term is more up-to-date
+        # Rule 4: Check if candidate's log is at least as up-to-date as ours
         last_log_index = len(self.log) - 1
-        # Get the term of the last log entry or 0 if the log is empty
         last_log_term = self.log[last_log_index]['term'] if self.log else 0
-
-        # If the candidate's last log term is greater than the last log term or if the terms are the same and the candidate's last log index is greater than or equal to the last log index, then the candidate's log is up-to-date
+        # Compare logs based on Raft rules:
+        # - Last log term is higher, or
+        # - Terms are equal but candidate's log is at least as long
         log_is_up_to_date = (
             candidate_last_log_term > last_log_term or
             (candidate_last_log_term == last_log_term and
              candidate_last_log_index >= last_log_index)
         )
-
-        # If we can vote and the candidate's log is up-to-date, vote for the candidate
+        # Grant vote if both conditions are met
         if can_vote and log_is_up_to_date:
             self.voted_for = candidate_id
             self.reset_election_timer()
             print(f"[{self.name}] Voted for {candidate_id} in term {self.current_term}")
-            return {
-                'term': self.current_term,
-                'vote_granted': True
-            }
-
-        # Otherwise, don't vote
-        return {
-            'term': self.current_term,
-            'vote_granted': False
-        }
+            return {'term': self.current_term, 'vote_granted': True}
+        # Reject vote if any condition is not met
+        return {'term': self.current_term, 'vote_granted': False}
     
-    def handle_append_entries(self, data):
-        # Parse data. Get leader term, leader id, previous log index, previous log term, entries, and leader commit index
+    def handle_append_entries(self, data: dict):
+        """
+        Handles AppendEntries RPCs from the leader for log replication and heartbeats. Implements Raft's log consistency check and replication mechanisms.
+        Args:
+            data (dict): Contains:
+                - term: Leader's term
+                - leader_name: Leader's identifier
+                - prev_log_index: Index of log entry before new ones
+                - prev_log_term: Term of prev_log_index entry
+                - entries: List of entries to append
+                - leader_commit: Leader's commit index
+        Returns:
+            dict: Response containing term (Current term for leader to update itself) and success (Boolean indicating if append was successful)
+        """
+        # request data
         leader_term = data['term']
         leader_id = data['leader_name']
         prev_log_index = data['prev_log_index']
         prev_log_term = data['prev_log_term']
         entries = data['entries']
         leader_commit = data['leader_commit']
-        
-        # Log receipt of AppendEntries
-        if entries or self.current_term != leader_term:
-            print(f"[{self.name}] Received AppendEntries from Leader {leader_id}. Term: {leader_term}, Current Term: {self.current_term}")
-            print(f"[{self.name}] PrevLogIndex: {prev_log_index}, PrevLogTerm: {prev_log_term}, Entries: {entries}, LeaderCommit: {leader_commit}")
 
-        # Reply false if term < currentTerm
+        # Rule 1: Reply false if leader's term < currentTerm
         if leader_term < self.current_term:
-            print(f"[{self.name}] AppendEntries rejected: Leader term {leader_term} is less than current term {self.current_term}.")
             return {'term': self.current_term, 'success': False}
 
-        # Update term if leaderTerm > currentTerm
+        # Rule 2: Update term if leader's term is greater
         if leader_term > self.current_term:
-            print(f"[{self.name}] Updating term to {leader_term} and converting to Follower.")
             self.current_term = leader_term
             self.voted_for = None
 
-        # Reset election timer, convert to follower, and set leader id
+        # Reset election timer and update leader state
         self.reset_election_timer()
         self.state = 'Follower'
         self.leader_id = leader_id
 
-        # Check log consistency. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-        if prev_log_index >= len(self.log):
-            print(f"[{self.name}] AppendEntries failed: PrevLogIndex {prev_log_index} out of bounds (Log Length: {len(self.log)}).")
-            return {'term': self.current_term, 'success': False}
-        
-        # If an existing entry conflicts with a new one, delete the existing entry and all that follow it
+        # Check if recovery is needed for committed entries
+        current_time = time.time()
+        if (self.commit_index < leader_commit and 
+            not self.recovering and 
+            (current_time - self.last_recovery_attempt) > self.recovery_timeout):
+            self.recovering = True
+            self.last_recovery_attempt = current_time
+            print(f"[{self.name}] Starting recovery of committed entries. "
+                f"Local commit index: {self.commit_index}, Leader commit: {leader_commit}")
+
+        # Rule 3: Check log consistency
         if prev_log_index >= 0 and (
             prev_log_index >= len(self.log) or
             self.log[prev_log_index]['term'] != prev_log_term
         ):
-            print(f"[{self.name}] Log inconsistency detected at PrevLogIndex {prev_log_index}. Term mismatch.")
             return {'term': self.current_term, 'success': False}
 
-        # Process new entries
+        # Process new entries if any
         if entries:
-            print(f"[{self.name}] Appending new entries to the log.")
-            # Delete conflicting entries by using the previous log index
+            # Delete any conflicting entries and append new ones
             self.log = self.log[:prev_log_index + 1]
-            # Append new entries to ensure consistency
+            old_len = len(self.log)
             self.log.extend(entries)
-            print(f"[{self.name}] Appended {len(entries)} entries to log")
+            
+            # Print recovery information if in recovery mode
+            if self.recovering:
+                # Only consider entries up to leader's commit index
+                committed_entries = [e for e in entries if e['index'] <= leader_commit]
+                if committed_entries:
+                    print(f"[{self.name}] Recovered {len(committed_entries)} committed entries")
+                    print(f"[{self.name}] Committed entries indices: {[e['index'] for e in committed_entries]}")
 
-        # Update commit index
+        # Update commit index and apply newly committed entries
+        old_commit_index = self.commit_index
         if leader_commit > self.commit_index:
-            # Set commit index to the minimum of leader commit and the last index in the log
-            # `commitIndex` is the index of the highest log entry known to be committed
             self.commit_index = min(leader_commit, len(self.log) - 1)
-            # print(f"[{self.name}] Commit index updated to {self.commit_index}.")
-            # Apply committed entries to the state machine
+            if self.recovering:
+                newly_committed = self.commit_index - old_commit_index
+                if newly_committed > 0:
+                    print(f"[{self.name}] Applying {newly_committed} newly committed entries")
             self.apply_committed_entries()
+
+        # Check if recovery is complete
+        if self.recovering and self.commit_index >= leader_commit:
+            self.recovering = False
+            print(f"[{self.name}] Recovery of committed entries complete. "
+                f"Commit index: {self.commit_index}")
 
         return {'term': self.current_term, 'success': True}
 
-    def apply_committed_entries(self): # Apply committed entries to the state machine
-        while self.last_applied < self.commit_index: # Apply all committed entries
-            self.last_applied += 1 # Increment the last applied index
-            entry = self.log[self.last_applied] # Get the entry to apply
-            self.apply_entry_to_state_machine(entry) # Apply the entry to the state machine
+    def apply_committed_entries(self):
+        """
+        Applies all committed but not yet applied entries to the state machine. Guarantees that entries are applied in order and only once.
+        This function is called whenever the commit index advances, ensuring that all committed entries are applied to the state machine in sequence.
+        """
+        while self.last_applied < self.commit_index:
+            self.last_applied += 1
+            entry = self.log[self.last_applied]
+            self.apply_entry_to_state_machine(entry)
 
-    def apply_entry_to_state_machine(self, entry): # Apply the entry to the state machine (i.e. persistent memory)
+    def apply_entry_to_state_machine(self, entry):
+        """
+        Applies a single log entry to the state machine (persistent storage).
+        """
         with open(self.log_filename, 'a') as f:
             f.write(f"{entry['value']}\n")
         print(f"[{self.name}] Applied entry to log: {entry['value']}")
 
     def start_election(self):
-        self.state = 'Candidate' # Start of the election convert to candidate
-        self.current_term += 1 # Increment the term
-        self.voted_for = self.name # Vote for self
-        self.leader_id = None # No leader yet
-        votes_received = 1  # 1 vote for self
+        """
+        Initiates leader election process when election timeout occurs.
+        Implements the candidate's role in Raft's leader election protocol.
+        
+        The function:
+        1. Transitions to candidate state
+        2. Increments current term
+        3. Votes for itself
+        4. Requests votes from other nodes
+        5. Becomes leader if majority votes received
+        """
+        # Initialize election state
+        self.state = 'Candidate'  # Transition to candidate state
+        self.current_term += 1    # Increment term
+        self.voted_for = self.name  # Vote for self
+        self.leader_id = None     # Clear any known leader
+        votes_received = 1        # Count self vote
 
         print(f"[{self.name}] Starting election for term {self.current_term}")
-        self.reset_election_timer() 
+        self.reset_election_timer()  # Reset election timeout
 
-        # Prepare RequestVote arguments
-        last_log_index = len(self.log) - 1 # Last index in the log
-        last_log_term = self.log[last_log_index]['term'] if self.log else 0 # Term of the last log entry
+        # Prepare vote request arguments
+        last_log_index = len(self.log) - 1
+        last_log_term = self.log[last_log_index]['term'] if self.log else 0
 
-        # Send RequestVote RPCs to all other nodes
+        # Request votes from all other nodes
         for node_name in NODES:
             if node_name != self.name:
-                try: # Send a request to vote with the current term, candidate name, last log index and last log term
-                    response = self.send_rpc( 
+                try:
+                    # Send RequestVote RPC to each node
+                    response = self.send_rpc(
                         NODES[node_name]['ip'],
                         NODES[node_name]['port'],
                         'RequestVote',
@@ -268,168 +384,189 @@ class Node:
                         }
                     )
 
-                    if response and response.get('vote_granted'): # If the vote is granted
-                        votes_received += 1 # Increment the vote count
-                        if (votes_received > len(NODES) // 2 and # If majority of the votes are received
-                            self.state == 'Candidate'):  # Check if still candidate
-                            self.become_leader() # Become leader
+                    # Process vote response
+                    if response and response.get('vote_granted'):
+                        votes_received += 1
+                        # Check if we have majority and are still candidate
+                        if (votes_received > len(NODES) // 2 and 
+                            self.state == 'Candidate'):  
+                            self.become_leader()
                             break
-                    elif response and response['term'] > self.current_term: # If the term is greater than the current term
-                        self.current_term = response['term'] # Update the term
-                        self.state = 'Follower' # Convert to follower
-                        self.voted_for = None # Reset the vote
+                    # Step down if we discover a higher term
+                    elif response and response['term'] > self.current_term:
+                        self.current_term = response['term']
+                        self.state = 'Follower'
+                        self.voted_for = None
                         break
                 except Exception as e:
                     print(f"[{self.name}] Error requesting vote from {node_name}: {e}")
 
     def check_cluster_health(self):
-        """Check how many nodes are reachable in the cluster"""
+        """
+        Checks the health of the cluster by attempting to contact all nodes.
+        Used before becoming leader to ensure there's a majority of nodes available.
+        """
         reachable_nodes = 1  # Count self
         for node_name in NODES:
             if node_name != self.name:
-                try: # Send an AppendEntries RPC to all other nodes
+                try: # Send empty AppendEntries as a heartbeat to check connectivity
                     response = self.send_rpc(
                         NODES[node_name]['ip'],
                         NODES[node_name]['port'],
-                        'AppendEntries',  # Use as heartbeat. Send empty entries with current term and commit index to check if node is reachable
+                        'AppendEntries',  # Use as heartbeat
                         {
                             'term': self.current_term,
                             'leader_name': self.name,
                             'prev_log_index': len(self.log) - 1,
                             'prev_log_term': self.log[-1]['term'] if self.log else 0,
-                            'entries': [],
+                            'entries': [], # Empty entries for heartbeat
                             'leader_commit': self.commit_index
                         }
                     )
-                    if response is not None: # If response received, node is reachable
+                    if response is not None: # Increment counter if node responds
                         reachable_nodes += 1
-                except Exception:
+                except Exception: # Skip unreachable nodes
                     continue
         return reachable_nodes
 
     def become_leader(self):
+        """
+        Transitions node to leader state if conditions are met.
+        """
         # Check cluster health before becoming leader
         reachable_nodes = self.check_cluster_health()
-        # If majority nodes are reachable, become leader
+        # Require majority of nodes to be reachable
         if reachable_nodes <= len(NODES) // 2:
             print(f"[{self.name}] Cannot become leader: only {reachable_nodes}/{len(NODES)} nodes reachable")
-            self.state = 'Follower'
+            self.state = 'Follower' # Step down if can't reach majority
             return
-
+        # Transition to leader
         print(f"[{self.name}] Becoming leader for term {self.current_term}")
-        self.state = 'Leader' # Convert to leader
-        self.leader_id = self.name # Set leader id to self
+        self.state = 'Leader'
+        self.leader_id = self.name
         
-        # Initialize leader state by setting next_index and match_index for each node
-        # next_index is the index of the next log entry to send to that node
-        # match_index is the index of the highest log entry known to be replicated on that node
-        self.next_index = {node: len(self.log) for node in NODES if node != self.name} # Next index for each node
-        self.match_index = {node: -1 for node in NODES if node != self.name} # Match index for each node
+        # Initialize leader state
+        self.next_index = {node: len(self.log) for node in NODES if node != self.name}
+        self.match_index = {node: -1 for node in NODES if node != self.name}
         
         # Send immediate heartbeat
         self.send_heartbeats()
 
     def send_heartbeats(self):
-        # Send empty AppendEntries RPCs as heartbeats to all other nodes
+        """
+        Sends heartbeats to all nodes in the cluster, including any new log entries. This maintains leader state and keep followers up-to-date.
+        """
         for node_name in NODES:
             if node_name != self.name:
-                entries = [] # Empty entries
-                next_idx = self.next_index.get(node_name, len(self.log)) # Next index for the node
+                entries = []
+                next_idx = self.next_index.get(node_name, len(self.log))
                 
-                if next_idx < len(self.log): # If there are entries to send
-                    entries = self.log[next_idx:] # Get the entries to send
+                if next_idx < len(self.log):
+                    entries = self.log[next_idx:]
                 
-                self.send_append_entries(node_name, entries) # Send the AppendEntries RPC
+                self.send_append_entries(node_name, entries)
 
     def handle_client_submit(self, data):
-        # If not leader, redirect to leader
+        """
+        Handles client requests to submit new values to the distributed log.
+        Implements the leader's role in processing client requests and ensuring replication.
+                
+        Returns:
+            dict: Response containing either success (if value was committed) or redirect (True and leader_name if not leader).
+        """
+        # If not leader, redirect client to current leader
         if self.state != 'Leader':
             return {
                 'redirect': True,
                 'leader_name': self.leader_id
             }
 
-        # If leader, append entry to log
-        # The entry is not yet committed, but it will be replicated to followers
-        # It contains the term, value, and index of the entry
+        # Create new log entry
         entry = {
             'term': self.current_term,
             'value': data['value'],
             'index': len(self.log)
         }
-        self.log.append(entry)
+                
+        self.log.append(entry) # Append entry to local log first
         print(f"[{self.name}] New entry added to log: {entry}")
 
-        # Replicate to followers
-        success_count = 1  # Count self
+        # Attempt to replicate to followers
+        success_count = 1  # Count self as success
+        
+        # Try to replicate to all other nodes
         for node_name in NODES:
             if node_name != self.name:
-                if self.replicate_log_to_follower(node_name): # Replicate log to follower. If successful, increment success count
+                if self.replicate_log_to_follower(node_name):
                     success_count += 1
 
-        # If majority successful, commit and apply
+        # Check if we achieved majority consensus
         if success_count > len(NODES) // 2:
-            self.commit_index = len(self.log) - 1 
+            # Majority successful, commit and apply
+            self.commit_index = len(self.log) - 1
             self.apply_committed_entries()
             return {'success': True}
         else:
-            # Roll back if replication failed, FIFO
-            self.log.pop()
+            # Failed to achieve majority, rollback entry
+            self.log.pop()  # Remove the entry we just added
             return {'success': False}
 
     def replicate_log_to_follower(self, follower_name):
-        # Get entries to replicate
+        """
+        Only focus on replicating committed entries
+        """
         next_idx = self.next_index[follower_name]
-        entries = self.log[next_idx:]
         
-        # Send AppendEntries RPC to follower
+        # Only send entries up to commit_index
+        entries = self.log[next_idx:self.commit_index + 1]
+        if not entries:
+            return True  # Nothing to replicate
+            
         response = self.send_append_entries(follower_name, entries)
-        # If successful, update next_index and match_index
-        # next_index is the index of the next log entry to send to that node
-        # upon success, next_index of the follower is the same as the length of the leader's log
+        
         if response and response.get('success'):
-            self.next_index[follower_name] = len(self.log)
-            self.match_index[follower_name] = len(self.log) - 1
+            self.next_index[follower_name] = self.commit_index + 1
+            self.match_index[follower_name] = self.commit_index
             return True
         elif response:
-            # If follower is behind, decrement next_index and retry
-            # We decrement because the follower may have skipped entries so we need to retry from the previous index
-            self.next_index[follower_name] = max(0, self.next_index[follower_name] - 1) # If failed, decrement next_index and retry
-        else:
-            # No response from follower (e.g., node failure)
-            print(f"[{self.name}] Failed to contact {follower_name}.")
-            return False
+            # If replication failed, decrease next_index and try with a smaller batch
+            self.next_index[follower_name] = max(0, next_idx - 1)
+            return self.replicate_log_to_follower(follower_name)
+        return False
 
     def send_append_entries(self, follower_name, entries):
-        # Get previous log index and term
+        """
+        Sends AppendEntries RPC to a follower with new log entries or heartbeat.
+        """
+        # Calculate previous log information for consistency check
         prev_log_index = self.next_index[follower_name] - 1
+        # Get term of previous log entry (0 if no previous entry)
         prev_log_term = (
             self.log[prev_log_index]['term'] 
             if prev_log_index >= 0 and self.log 
             else 0
         )
 
-        # Send AppendEntries RPC to follower
+    # Send AppendEntries RPC to follower
         return self.send_rpc(
-            # Get follower IP and port from the configuration
             NODES[follower_name]['ip'],
             NODES[follower_name]['port'],
             'AppendEntries',
             {
-                # Send term, leader name, previous log index and term, entries, and leader commit index
-                'term': self.current_term,
-                'leader_name': self.name,
-                'prev_log_index': prev_log_index,
-                'prev_log_term': prev_log_term,
-                'entries': entries,
-                'leader_commit': self.commit_index
+                'term': self.current_term,          # Leader's current term
+                'leader_name': self.name,           # Leader's identifier
+                'prev_log_index': prev_log_index,   # Index of log entry before new ones
+                'prev_log_term': prev_log_term,     # Term of prev_log_index entry
+                'entries': entries,                 # Log entries to store (empty for heartbeat)
+                'leader_commit': self.commit_index  # Leader's commit index
             }
         )
 
     def trigger_leader_change(self):
-        # Simulating a leader change by stepping down
+        """
+        Triggers a leader change if the current node is the leader. This is called by the client to initiate a leader change.
+        """
         if self.state == 'Leader':
-            # Reset leader state by setting next_index and match_index for each node to None to force a refresh and reset the election timer
             print(f"[{self.name}] Triggering leader change")
             self.state = 'Follower'
             self.voted_for = None
@@ -437,77 +574,33 @@ class Node:
             self.reset_election_timer()
             return {'status': 'Leader stepping down'}
         return {'status': 'Not a leader'}
-    
-    def simulate_crash_leader(self):
-        if self.state == 'Leader':
-            print(f"[{self.name}] Simulating leader crash...")
 
-            # Clear state to simulate a crash
-            self.log = []
-            self.commit_index = -1
-            self.last_applied = -1
-            self.current_term = 0
-            self.voted_for = None
-            self.state = 'Follower'
-            print(f"[{self.name}] Cleared state and transitioned to FOLLOWER after crash.")
-
-            # Notify followers to trigger a new leader election
-            for peer_name in NODES:
-                if peer_name != self.name:
-                    try:
-                        self.send_rpc(
-                            NODES[peer_name]['ip'],
-                            NODES[peer_name]['port'],
-                            'TriggerLeaderChange',
-                            {}
-                        )
-                        print(f"[{self.name}] Notified follower {peer_name} to start an election.")
-                    except Exception as e:
-                        print(f"[{self.name}] Error notifying follower {peer_name}: {e}")
-
-            # Simulate downtime
-            time.sleep(5)
-            print(f"[{self.name}] Waking up from simulated crash.")
-
-            return {'status': 'Leader crashed and rejoined the cluster'}
-
-        print(f"[{self.name}] This node is not a leader; cannot simulate leader crash.")
-        return {'status': 'Not a leader'}
-    
-    def simulate_crash_node(self):
-        print(f"[{self.name}] Simulating node crash...")
-
-        print(f"[{self.name}] Log before crash: {self.log}")
-
-        # Truncate the log to simulate missing entries
-        if len(self.log) > 1:
-            self.log = self.log[:len(self.log) // 2]
-            print(f"[{self.name}] Truncated log to simulate inconsistency: {self.log}")
-
-        # Clear state to simulate crash
+    def simulate_crash(self):
+        """
+        Simulates a crash by resetting the node's state to follower. This is called by the client to simulate a crash.
+        """
+        print(f"[{self.name}] Simulating crash")
+        self.log = []
         self.commit_index = -1
         self.last_applied = -1
         self.current_term = 0
         self.voted_for = None
         self.state = 'Follower'
-        print(f"[{self.name}] Cleared state and transitioned to FOLLOWER after crash.")
-
-        # Simulate downtime
-        time.sleep(5)
-        print(f"[{self.name}] Waking up from simulated crash.")
-
-        return {'status': 'Node rejoined after crash'}
-
+        
+        # Clear log file
+        open(self.log_filename, 'w').close()
+        return {'status': 'Node crashed'}
 
     def send_rpc(self, ip, port, rpc_type, data, timeout=2.0):
+        # Coming from Lab1 to handle RPC
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s: # Create a new socket
-                s.settimeout(timeout) # Set the socket timeout
-                s.connect((ip, port)) # Connect to the server
-                message = json.dumps({'rpc_type': rpc_type, 'data': data}) # Create the message using the RPC type and data
-                s.sendall(message.encode()) # Send the message
-                response = s.recv(4096).decode() # Receive the response and decode it
-                return json.loads(response) # Parse the JSON response
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((ip, port))
+                message = json.dumps({'rpc_type': rpc_type, 'data': data})
+                s.sendall(message.encode())
+                response = s.recv(4096).decode()
+                return json.loads(response)
         except socket.timeout:
             print(f"[{self.name}] RPC to {ip}:{port} timed out")
             return None
@@ -519,20 +612,24 @@ class Node:
             return None
 
 if __name__ == '__main__':
+    """
+    Main entry point for our Raft node application.
+    """
     if len(sys.argv) != 2:
-        print("Usage: python node.py [node_name]") # Check if the correct number of arguments is provided
+        print("Usage: python node.py [node_name]")
         sys.exit(1)
-
-    node_name = sys.argv[1] # Get the node name from the command line arguments
-    if node_name not in NODES: # Check if the node name is valid
+    # Validate node name from config file
+    node_name = sys.argv[1]
+    if node_name not in NODES:
         print(f"Invalid node name. Available nodes: {list(NODES.keys())}")
         sys.exit(1)
-
-    node = Node(node_name) # Create a new node instance
+    # Create and start the node
+    node = Node(node_name)
     try:
-        node.start() # Start the node
+        node.start()
     except KeyboardInterrupt:
+        # Handle shutdown on Ctrl+C
         print(f"[{node.name}] Shutting down...")
-        node.running = False # Set the running flag to False if the program is interrupted
-        if node.server_socket:
-            node.server_socket.close() # Close the server socket
+        node.running = False
+        if node.server_socket: # Clean up network resources
+            node.server_socket.close()
