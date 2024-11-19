@@ -578,13 +578,13 @@ class Node:
     def simulate_crash(self):
         """
         Simulates a crash by:
-        1. If leader: appends entries to log before becoming unavailable
-        2. Maintains volatile state to demonstrate log consistency
-        3. Sleeps to allow new leader election and updates
+        1. If leader: appends entries to log before sleeping
+        2. Sleeps to allow new leader election
+        3. Maintains log state to demonstrate log consistency
         """
         print(f"\n[{self.name}] Simulating crash...")
         
-        # If leader, append some entries before crashing
+        # If leader, append some entries before sleeping
         if self.state == 'Leader':
             crash_entries = [
                 {'term': self.current_term, 'value': 'crash_entry_1', 'index': len(self.log)},
@@ -595,17 +595,11 @@ class Node:
             print(f"[{self.name}] Current log: {self.log}")
             print(f"[{self.name}] Commit index: {self.commit_index}")
         
-        # Print current state before sleep
-        print(f"[{self.name}] Pre-sleep state:")
-        print(f"[{self.name}] Current role: {self.state}")
-        print(f"[{self.name}] Current term: {self.current_term}")
-        print(f"[{self.name}] Log entries: {self.log}")
-        
         print(f"[{self.name}] Going to sleep for 20 seconds to allow new leader election...")
-        time.sleep(20)
-        print(f"[{self.name}] Node rejoining cluster with log: {self.log}")
+        time.sleep(100)
+        print(f"[{self.name}] Woke up with log: {self.log}")
         
-        return {'status': 'Node crashed'}
+        return {'status': 'Node crashed and recovered'}
 
     def send_rpc(self, ip, port, rpc_type, data, timeout=2.0):
         # Coming from Lab1 to handle RPC
