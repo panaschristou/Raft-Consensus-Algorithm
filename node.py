@@ -29,7 +29,7 @@ class Node:
         self.lock = threading.Lock() # Lock to synchronize access to shared variables
         
         # Create or clear log file
-        self.log_filename = f"{self.name}_CISC6935"
+        self.log_filename = f"{self.name}_CISC6935.txt"
         open(self.log_filename, 'w').close()
 
     def start(self):
