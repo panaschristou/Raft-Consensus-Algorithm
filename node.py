@@ -174,8 +174,9 @@ class Node:
         leader_commit = data['leader_commit']
         
         # Log receipt of AppendEntries
-        print(f"[{self.name}] Received AppendEntries from Leader {leader_id}. Term: {leader_term}, Current Term: {self.current_term}")
-        print(f"[{self.name}] PrevLogIndex: {prev_log_index}, PrevLogTerm: {prev_log_term}, Entries: {entries}, LeaderCommit: {leader_commit}")
+        if entries or self.current_term != leader_term:
+            print(f"[{self.name}] Received AppendEntries from Leader {leader_id}. Term: {leader_term}, Current Term: {self.current_term}")
+            print(f"[{self.name}] PrevLogIndex: {prev_log_index}, PrevLogTerm: {prev_log_term}, Entries: {entries}, LeaderCommit: {leader_commit}")
 
         # Reply false if term < currentTerm
         if leader_term < self.current_term:
@@ -220,7 +221,7 @@ class Node:
             # Set commit index to the minimum of leader commit and the last index in the log
             # `commitIndex` is the index of the highest log entry known to be committed
             self.commit_index = min(leader_commit, len(self.log) - 1)
-            print(f"[{self.name}] Commit index updated to {self.commit_index}.")
+            # print(f"[{self.name}] Commit index updated to {self.commit_index}.")
             # Apply committed entries to the state machine
             self.apply_committed_entries()
 
@@ -394,7 +395,10 @@ class Node:
             # If follower is behind, decrement next_index and retry
             # We decrement because the follower may have skipped entries so we need to retry from the previous index
             self.next_index[follower_name] = max(0, self.next_index[follower_name] - 1) # If failed, decrement next_index and retry
-        return False
+        else:
+            # No response from follower (e.g., node failure)
+            print(f"[{self.name}] Failed to contact {follower_name}.")
+            return False
 
     def send_append_entries(self, follower_name, entries):
         # Get previous log index and term
@@ -437,21 +441,8 @@ class Node:
     def simulate_crash_leader(self):
         if self.state == 'Leader':
             print(f"[{self.name}] Simulating leader crash...")
-            
-            # Append an uncommitted entry before crashing
-            uncommitted_entry = {'term': self.current_term, 'command': 'uncommitted_entry'}
-            self.log.append(uncommitted_entry)
-            print(f"[{self.name}] Appended uncommitted entry: {uncommitted_entry}")
 
-            # Print the current log before crashing
-            print(f"[{self.name}] Current log before crash: {self.log}")
-
-            # Simulating a crash by clearing the log and resetting the state
-            # We set commit_index and last_applied to -1 to indicate that no entries have been committed or applied
-            # We set current_term to 0 to indicate that the term is not set
-            # We set voted_for to None to indicate that we have not voted for any candidate
-            # We set the state to Follower to indicate that we are no longer the leader
-            print(f"[{self.name}] Simulating crash")
+            # Clear state to simulate a crash
             self.log = []
             self.commit_index = -1
             self.last_applied = -1
@@ -459,34 +450,33 @@ class Node:
             self.voted_for = None
             self.state = 'Follower'
             print(f"[{self.name}] Cleared state and transitioned to FOLLOWER after crash.")
-            
-            # Clear the log file
-            open(self.log_filename, 'w').close()
-            print(f"[{self.name}] Cleared log file for persistent storage.")
 
-            # Notify followers to initiate a new leader election
-            for node_name in NODES:
-                if node_name != self.name:
+            # Notify followers to trigger a new leader election
+            for peer_name in NODES:
+                if peer_name != self.name:
                     try:
                         self.send_rpc(
-                            NODES[node_name]['ip'],
-                            NODES[node_name]['port'],
+                            NODES[peer_name]['ip'],
+                            NODES[peer_name]['port'],
                             'TriggerLeaderChange',
                             {}
                         )
-                        print(f"[{self.name}] Notified follower {node_name} to start election.")
+                        print(f"[{self.name}] Notified follower {peer_name} to start an election.")
                     except Exception as e:
-                        print(f"[{self.name}] Error notifying {node_name}: {e}")
+                        print(f"[{self.name}] Error notifying follower {peer_name}: {e}")
 
-            return {'status': 'Leader crashed'}
-        
+            # Simulate downtime
+            time.sleep(5)
+            print(f"[{self.name}] Waking up from simulated crash.")
+
+            return {'status': 'Leader crashed and rejoined the cluster'}
+
         print(f"[{self.name}] This node is not a leader; cannot simulate leader crash.")
         return {'status': 'Not a leader'}
     
     def simulate_crash_node(self):
         print(f"[{self.name}] Simulating node crash...")
 
-        # Print the current log before truncating it
         print(f"[{self.name}] Log before crash: {self.log}")
 
         # Truncate the log to simulate missing entries
@@ -494,7 +484,7 @@ class Node:
             self.log = self.log[:len(self.log) // 2]
             print(f"[{self.name}] Truncated log to simulate inconsistency: {self.log}")
 
-        # Clear the node's state
+        # Clear state to simulate crash
         self.commit_index = -1
         self.last_applied = -1
         self.current_term = 0
@@ -502,34 +492,10 @@ class Node:
         self.state = 'Follower'
         print(f"[{self.name}] Cleared state and transitioned to FOLLOWER after crash.")
 
-        # Clear the log file
-        open(self.log_filename, 'w').close()
-        print(f"[{self.name}] Cleared log file for persistent storage.")
-
-        # Simulate downtime and rejoin
+        # Simulate downtime
         time.sleep(5)
-        print(f"[{self.name}] Node rejoining the cluster...")
+        print(f"[{self.name}] Waking up from simulated crash.")
 
-        # Rejoin the cluster by requesting log synchronization
-        if self.leader_id:
-            try:
-                self.send_rpc(
-                    NODES[self.leader_id]['ip'],
-                    NODES[self.leader_id]['port'],
-                    'AppendEntries',
-                    {
-                        'term': self.current_term,
-                        'leader_name': self.leader_id,
-                        'prev_log_index': len(self.log) - 1,
-                        'prev_log_term': self.log[-1]['term'] if self.log else 0,
-                        'entries': [],
-                        'leader_commit': self.commit_index
-                    }
-                )
-                print(f"[{self.name}] Requested log synchronization from leader {self.leader_id}.")
-            except Exception as e:
-                print(f"[{self.name}] Error rejoining the cluster: {e}")
-        
         return {'status': 'Node rejoined after crash'}
 
 
