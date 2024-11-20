@@ -77,6 +77,11 @@ python client.py simulate_crash node1  # assuming node1 is leader
 4. While the former leader is off, we can submit new values and the newly election leader will handle them perfectly.
 5. After the former leader rejoins the cluster as a follower, it will check the node's state and recover the log, first checking what values are committed and comparing it to what it has. Since it has some corrupted entries, the algorithm will delete these and iteratively correct its values.
 
+### BONUS 🤑
+1. Run any of the previous scenarios.
+2. Instead of crashing the leader node, crash any follower (Either by utilizing the client's function `python client.py simulate_crash node1  # assuming node1 is a follower`, or using `CTRL + C`)
+3. Submit new values to the cluster.
+4. Check that the log (saved t
 
 ## Implementation Details
 The system implements core Raft features:
