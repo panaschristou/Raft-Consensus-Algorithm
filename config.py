@@ -1,5 +1,3 @@
-# config.py
-
 NODES = {
     'node1': {'ip': 'localhost', 'port': 5001},
     'node2': {'ip': 'localhost', 'port': 5002},
