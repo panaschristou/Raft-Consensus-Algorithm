@@ -81,7 +81,10 @@ python client.py simulate_crash node1  # assuming node1 is leader
 1. Run any of the previous scenarios.
 2. Instead of crashing the leader node, crash any follower (Either by utilizing the client's function `python client.py simulate_crash node1  # assuming node1 is a follower`, or using `CTRL + C`)
 3. Submit new values to the cluster.
-4. Check that the log (saved t
+4. Check that the log do not have the latest submitted value(saved in the same directory as file). For this, you can access the node through a new terminal or simply run `cat node1_lab2Raft.txt # In case node1 is the failed follower`
+In our video demonstration we showed two scenarios:
+a. Recovered a single value in the log.
+b. Recovered the whole log file in case it gets deleted.
 
 ## Implementation Details
 The system implements core Raft features:
