@@ -9,7 +9,8 @@ A Python implementation of the Raft consensus algorithm for distributed systems.
 ```
 ├── node.py         # Main Raft node implementation
 ├── client.py       # Client interface for interacting with the cluster
-└── config.py       # Configuration file for node settings
+├── config.py       # Configuration file for node settings
+└── README.md       # This file
 ```
 
 ## Running our system 🏃🏼‍♀️‍➡️
