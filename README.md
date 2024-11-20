@@ -49,7 +49,7 @@ python client.py print_logs
 ## Scenario 1: Basic leader election
 1. Start all three nodes
 2. The nodes will automatically elect a leader
-3. Submit values to verify the leader is working. After submitting values, you will see that the nodes will interact and if the majority is reached, the value is commited:
+3. Submit values to verify the leader is working. After submitting values, you will see that the nodes will interact and if the majority is reached, the value is committed:
 ```
 python client.py submit "test_value"
 ```
@@ -73,7 +73,9 @@ python client.py submit "value3"
 ```
 python client.py simulate_crash node1  # assuming node1 is leader
 ```
-3. ...
+3. After crashing the leader, you will see that there are new corrupted values given the simulated scenario.
+4. While the former leader is off, we can submit new values and the newly election leader will handle them perfectly.
+5. After the former leader rejoins the cluster as a follower, it will check the node's state and recover the log, first checking what values are committed and comparing it to what it has. Since it has some corrupted entries, the algorithm will delete these and iteratively correct its values.
 
 
 ## Implementation Details
