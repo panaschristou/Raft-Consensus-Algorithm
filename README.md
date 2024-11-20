@@ -83,6 +83,7 @@ python client.py simulate_crash node1  # assuming node1 is leader
 3. Submit new values to the cluster.
 4. Check that the log do not have the latest submitted value(saved in the same directory as file). For this, you can access the node through a new terminal or simply run `cat node1_lab2Raft.txt # In case node1 is the failed follower`
 In our video demonstration we showed two scenarios:
+
 a. Recovered a single value in the log.
 b. Recovered the whole log file in case it gets deleted.
 
