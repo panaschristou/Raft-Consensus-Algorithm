@@ -1,5 +1,10 @@
-# Lab2: Raft Consensus Implementation
-A Python implementation of the Raft consensus algorithm for distributed systems. This implementation maintains consistency across a cluster of three nodes and supports various scenarios including leader election, leader changes, and crash simulations (for both leader and follower/candidate states).
+# Raft Consensus Algorithm Implementation
+A Python implementation of the Raft consensus algorithm for distributed systems. This implementation maintains consistency across a cluster of three nodes and supports various scenarios including leader election, leader changes, and crash simulations (for both leader and follower/candidate states).  
+This implementation is part of the lab work for the Advanced Distributed Systems course at Fordham University.
+
+## Students
+- Panayiotis Christou
+- Fernando Martinez
 
 ## Requirements ⬇️
 - Python 3
