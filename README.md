@@ -99,7 +99,7 @@ The system implements core Raft features:
 - Safety Properties
 - Crash Recovery
 Each node maintains:
-- A persistent log file (`{node_name}_lab2Raft.txt`)
+- A persistent log file (`{node_name}_persistent_log.txt`)
 - Current term number
 - Voted-for information
 - Leader state
@@ -112,9 +112,9 @@ Our implementation includes:
 - Thread-safe operations
 ## Log Files
 Each node maintains its log in:
-- node1_lab2Raft.txt
-- node2_lab2Raft.txt
-- node3_lab2Raft.txt
+- node1_persistent_log.txt
+- node2_persistent_log.txt
+- node3_persistent_log.txt
 These files persist across restarts and are used for crash recovery.
 
 ## Monitoring the system 🧑🏼‍💻
