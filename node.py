@@ -39,7 +39,7 @@ class Node:
         self.simulating_crash_ongoing = False  # Flag to prevent multiple crash simulations or exceptions
 
         # Persistent storage
-        self.log_filename = f"{self.name}_lab2Raft.txt"  # File for persistent log storage
+        self.log_filename = f"{self.name}_persisten_log.txt"  # File for persistent log storage
         ## Initialize or load persistent log
         if not os.path.exists(self.log_filename):
             open(self.log_filename, 'w').close()   # Create empty log file if doesn't exist
